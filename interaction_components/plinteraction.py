@@ -681,6 +681,11 @@ class Protein(Mol):
 
         self.atom_prop_dict = config.atom_prop_dict
 
+        # ADDED dummy variables so that PLInteraction will work with two Protein objects
+        self.halogenbond_don = []
+        self.water = []
+
+
         self.metals = []
         data = namedtuple('metal', 'm orig_m m_orig_idx m_coords')
         for a in [a for a in self.all_atoms if a.GetSymbol().upper()
