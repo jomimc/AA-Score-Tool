@@ -243,10 +243,13 @@ def merge_descriptors(
     return descriptors
 
 
-def calc_score(mol_lig, mol_prot, clf):
-    result = get_interactions(mol_prot, mol_lig)
+### THIS IS THE MAIN FUNCTION TO RUN
+def calc_score(mol_prot):
+    ### RUN THIS ONCE, AND SAVE "result" and "interactions"
+    result = get_interactions(mol_prot)
     interactions = result.interactions
 
+    ### THEN OPTIMIZE THIS PART
     hb_dict = calc_hbonds_descriptor(interactions)
     hc_dict = calc_hydrophybic_descriptor(interactions)
     vdw_dict = calc_vdw_descriptor(result, mol_lig)
@@ -255,22 +258,24 @@ def calc_score(mol_lig, mol_prot, clf):
     metal_ligand = calc_metal_descriptor(interactions)
     tpp_energy, ppp_energy = calc_pistacking_descriptor(interactions)
     ppc_energy, pic_dict = calc_pication_descriptor(interactions)
-    rotat = Chem.rdMolDescriptors.CalcNumRotatableBonds(mol_lig)
 
-    descriptors = merge_descriptors(
-        hb_dict,
-        hc_dict,
-        vdw_dict,
-        ele_same_dict,
-        ele_opposite_dict,
-        pic_dict,
-        metal_ligand,
-        tpp_energy,
-        ppp_energy,
-        ppc_energy,
-        rotat)
-    score = clf.predict(descriptors)
-    return score
+### NO NEED FOR THE REST
+#   rotat = Chem.rdMolDescriptors.CalcNumRotatableBonds(mol_lig)
+
+#   descriptors = merge_descriptors(
+#       hb_dict,
+#       hc_dict,
+#       vdw_dict,
+#       ele_same_dict,
+#       ele_opposite_dict,
+#       pic_dict,
+#       metal_ligand,
+#       tpp_energy,
+#       ppp_energy,
+#       ppc_energy,
+#       rotat)
+#   score = clf.predict(descriptors)
+#   return score
 
 def get_format(ligand_file):
     file_format = os.path.basename( ligand_file ).split(".")[1]
@@ -354,5 +359,19 @@ def func():
         calc_single(mol_prot, mol_lig, output_file, clf)
     return
 
+
+def run_test(protein_file, output_file=None):
+    mol_prot = Chem.MolFromPDBFile(protein_file, removeHs=False)
+    _ = calc_score(mol_prot)
+
+    if output_file:
+        with open(output_file, "a") as f:
+            f.write(name + "\t" + str(score) + "\n")
+    else:
+        return name, score
+
+
 if __name__ == "__main__":
-    func()
+    run_test(sys.argv[1])
+
+

@@ -1276,10 +1276,10 @@ class PLInteraction:
         return filtered_wb
 
 
-def get_interactions(mol_protein, mol_ligand, mol_waters=None, pdbid=None):
+### MODIFY THIS SO THAT IT RUNS WITH TWO PROTEIN OBJECTS
+def get_interactions(mol_protein, pdbid=None):
     data = namedtuple("interaction", "lig prot interactions")
-    lig = Ligand(mol_ligand, mol_waters)
     prot = Protein(mol_protein)
 
-    interactions = PLInteraction(lig, prot, pdbid)
+    interactions = PLInteraction(prot, prot, pdbid)
     return data(lig=lig, prot=prot, interactions=interactions)
