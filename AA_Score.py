@@ -364,11 +364,11 @@ def run_test(protein_file, output_file=None):
     mol_prot = Chem.MolFromPDBFile(protein_file, removeHs=False)
     _ = calc_score(mol_prot)
 
-    if output_file:
-        with open(output_file, "a") as f:
-            f.write(name + "\t" + str(score) + "\n")
-    else:
-        return name, score
+    # if output_file:
+    #     with open(output_file, "a") as f:
+    #         f.write(name + "\t" + str(score) + "\n")
+    # else:
+    #     return name, score
 
 
 if __name__ == "__main__":

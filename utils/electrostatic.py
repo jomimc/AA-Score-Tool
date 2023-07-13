@@ -64,7 +64,7 @@ class Electrostatic(object):
         return charges
 
     def get_ele_matrix(self, atoms, charges):
-        ele_matrix = np.zeros((len(atoms), len(self.lig_atoms)), dtype=np.float)
+        ele_matrix = np.zeros((len(atoms), len(self.lig_atoms)), dtype=float)
         for idxp, p_charge in enumerate(charges):
            for idxl, l_charge in enumerate(self.lig_charges):
                ele = p_charge * l_charge 
