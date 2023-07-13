@@ -34,7 +34,7 @@ def get_d0_matrix(atoms, mol_lig):
     residue_symbols = [a.GetSymbol() for a in atoms]
     ligand_symbols = [a.GetSymbol() for a in mol_lig.GetAtoms()]
 
-    d0_matrix = np.zeros((len(residue_symbols), len(ligand_symbols)), dtype=np.float)
+    d0_matrix = np.zeros((len(residue_symbols), len(ligand_symbols)), dtype=float)
     for idxp, elemp in enumerate(residue_symbols):
         for idxl, eleml in enumerate(ligand_symbols):
             d0 = atom_radius.get(elemp, 0.0) + atom_radius.get(eleml, 0.0)

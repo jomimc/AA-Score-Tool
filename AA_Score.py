@@ -252,9 +252,9 @@ def calc_score(mol_prot):
     ### THEN OPTIMIZE THIS PART
     hb_dict = calc_hbonds_descriptor(interactions)
     hc_dict = calc_hydrophybic_descriptor(interactions)
-    vdw_dict = calc_vdw_descriptor(result, mol_lig)
+    vdw_dict = calc_vdw_descriptor(result, mol_prot)
     ele_same_dict, ele_opposite_dict = calc_ele_descriptor(
-        result, mol_lig, mol_prot)
+        result, mol_prot, mol_prot)
     metal_ligand = calc_metal_descriptor(interactions)
     tpp_energy, ppp_energy = calc_pistacking_descriptor(interactions)
     ppc_energy, pic_dict = calc_pication_descriptor(interactions)

@@ -1282,4 +1282,4 @@ def get_interactions(mol_protein, pdbid=None):
     prot = Protein(mol_protein)
 
     interactions = PLInteraction(prot, prot, pdbid)
-    return data(lig=lig, prot=prot, interactions=interactions)
+    return data(lig=prot, prot=prot, interactions=interactions)
