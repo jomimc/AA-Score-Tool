@@ -48,54 +48,6 @@ def filter_contacts(pairings):
 # FUNCTIONS FOR DETECTION OF SPECIFIC INTERACTIONS
 ##################################################
 
-def hydrophobic_interactions(atom_set_a):
-    """Detection of hydrophobic pliprofiler between atom_set_a (binding site) and atom_set_b (ligand).
-    Definition: All pairs of qualified carbon atoms within a distance of HYDROPH_DIST_MAX
-    """
-    data = namedtuple(
-        'hydroph_interaction',
-        'bsatom bsatom_orig_idx ligatom ligatom_orig_idx sidechain '
-        'distance restype resnr reschain restype_l resnr_l reschain_l')
-    pairings = []
-
-    # prepared 1) atom_pairs beforehand 2) used numpy operations to filter those pairs
-    coords_a = np.array([a.coords for a in atom_set_a])
-    
-    #distances = np.sqrt(np.sum((coords_a[:, None] - coords_a) ** 2, axis=2))
-    distances = np.zeros((len(coords_a), len(coords_a)))
-    for i in range(len(coords_a)):
-        for j in range(i+1, len(coords_a)):
-            distances[i, j] = distances[j, i] = euclidean3d(coords_a[i], coords_a[j])
-            
-    mask = (config.MIN_DIST < distances) & (distances < config.HYDROPH_DIST_MAX)
-    #atom_pairs = [(atom_set_a[i], atom_set_a[j]) for i, j in zip(*np.where(mask)) if i != j]
-    atom_pairs = [(atom_set_a[i], atom_set_a[j], distances[i, j]) for i, j in zip(*np.where(mask)) if i != j]
-
-    for a, b, e in atom_pairs:
-        restype, resnr, reschain = whichrestype(
-            a.atom), whichresnumber(
-            a.atom), whichchain(
-            a.atom)
-        is_sidechain_hc = is_sidechain(a.atom)
-        restype_l, resnr_l, reschain_l = "Lig", 1, "L"
-        contact = data(
-            bsatom=a.atom,
-            bsatom_orig_idx=a.orig_idx,
-            ligatom=b.atom,
-            ligatom_orig_idx=b.orig_idx,
-            sidechain=is_sidechain_hc,
-            distance=e,
-            restype=restype,
-            resnr=resnr,
-            reschain=reschain,
-            restype_l=restype_l,
-            resnr_l=resnr_l,
-            reschain_l=reschain_l
-            )
-        pairings.append(contact)
-    return filter_contacts(pairings)
-
-
 def hbonds(acceptors, donor_pairs, protisdon, typ):
     """Detection of hydrogen bonds between sets of acceptors and donor pairs.
     Definition: All pairs of hydrogen bond acceptor and donors with

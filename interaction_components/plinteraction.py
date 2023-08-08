@@ -15,7 +15,7 @@ from interaction_components.utils import extract_pdbid, read_pdb, create_folder_
 from interaction_components.utils import read, nucleotide_linkage, sort_members_by_importance, is_acceptor, is_donor
 from interaction_components.utils import whichchain, whichatomname, whichrestype, whichresnumber, euclidean3d, int32_to_negative
 from interaction_components.detection import halogen, pication, water_bridges, metal_complexation
-from interaction_components.detection import hydrophobic_interactions, pistacking, hbonds, saltbridge
+from interaction_components.detection import filter_contacts, pistacking, hbonds, saltbridge
 from interaction_components import config
 
 
@@ -950,49 +950,37 @@ class PLInteraction:
 
         # #@todo Refactor code to combine different directionality
 
-        self.saltbridge_lneg = saltbridge(
-            self.protein.get_pos_charged(),
-            self.ligand.get_neg_charged(),
-            True)
-        self.saltbridge_pneg = saltbridge(
-            self.ligand.get_pos_charged(),
-            self.protein.get_neg_charged(),
-            False)
+        prot_pchar, prot_nchar = self.protein.get_pos_charged(), self.protein.get_neg_charged()
+        self.saltbridge_lneg = saltbridge(prot_pchar, prot_nchar, True)
+        self.saltbridge_pneg = saltbridge(prot_pchar, prot_nchar, False)
 
-        self.all_hbonds_ldon = hbonds(self.protein.get_hba(),
-                                      self.ligand.get_hbd(), False, 'strong')
-        self.all_hbonds_pdon = hbonds(self.ligand.get_hba(),
-                                      self.protein.get_hbd(), True, 'strong')
+        prot_hba, prot_hbd = self.protein.get_hba(), self.protein.get_hbd()
+        self.all_hbonds_ldon = hbonds(prot_hba, prot_hbd, False, 'strong')
+        self.all_hbonds_pdon = hbonds(prot_hba, prot_hbd, True, 'strong')
 
         self.hbonds_ldon = self.refine_hbonds_ldon(
             self.all_hbonds_ldon, self.saltbridge_lneg, self.saltbridge_pneg)
         self.hbonds_pdon = self.refine_hbonds_pdon(
             self.all_hbonds_pdon, self.saltbridge_lneg, self.saltbridge_pneg)
+        
+        prot_rings = self.protein.rings
+        self.pistacking = pistacking(prot_rings, prot_rings)
 
-        self.pistacking = pistacking(self.protein.rings, self.ligand.rings)
-
-        self.all_pi_cation_laro = pication(
-            self.ligand.rings, self.protein.get_pos_charged(), True)
-        self.pication_paro = pication(
-            self.protein.rings,
-            self.ligand.get_pos_charged(),
-            False)
+        self.all_pi_cation_laro = pication(prot_rings, prot_pchar, True)
+        self.pication_paro = pication(prot_rings, prot_pchar, False)
 
         self.pication_laro = self.refine_pi_cation_laro(
             self.all_pi_cation_laro, self.pistacking)
 
-        self.all_hydrophobic_contacts = hydrophobic_interactions(self.protein.get_hydrophobic_atoms())
+        self.all_hydrophobic_contacts = self.hydrophobic_interactions(self.protein.get_hydrophobic_atoms())
         self.hydrophobic_contacts = self.refine_hydrophobic(
             self.all_hydrophobic_contacts, self.pistacking)
         self.halogen_bonds = halogen(
             self.protein.halogenbond_acc,
             self.ligand.halogenbond_don)
-        self.all_water_bridges = water_bridges(
-            self.protein.get_hba(),
-            self.ligand.get_hba(),
-            self.protein.get_hbd(),
-            self.ligand.get_hbd(),
-            self.ligand.water)
+        
+        prot_hba, prot_hbd = self.protein.get_hba(), self.protein.get_hbd()
+        self.all_water_bridges = water_bridges(prot_hba, prot_hba, prot_hbd, prot_hbd, self.ligand.water)
 
         self.water_bridges = self.refine_water_bridges(
             self.all_water_bridges, self.hbonds_ldon, self.hbonds_pdon)
@@ -1061,6 +1049,53 @@ class PLInteraction:
         else:
             # raise RuntimeWarning('no interactions for this ligand')
             print('no interactions for this ligand')
+
+    def hydrophobic_interactions(self, atom_set_a):
+        """Detection of hydrophobic pliprofiler between atom_set_a (binding site) and atom_set_b (ligand).
+        Definition: All pairs of qualified carbon atoms within a distance of HYDROPH_DIST_MAX
+        """
+        data = namedtuple(
+            'hydroph_interaction',
+            'bsatom bsatom_orig_idx ligatom ligatom_orig_idx sidechain '
+            'distance restype resnr reschain restype_l resnr_l reschain_l')
+        pairings = []
+
+        # prepared 1) atom_pairs beforehand 2) used numpy operations to filter those pairs
+        coords_a = np.array([a.coords for a in atom_set_a])
+        
+        #distances = np.sqrt(np.sum((coords_a[:, None] - coords_a) ** 2, axis=2))
+        distances = np.zeros((len(coords_a), len(coords_a)))
+        for i in range(len(coords_a)):
+            for j in range(i+1, len(coords_a)):
+                distances[i, j] = distances[j, i] = euclidean3d(coords_a[i], coords_a[j])
+
+        mask = (config.MIN_DIST < distances) & (distances < config.HYDROPH_DIST_MAX)
+        #atom_pairs = [(atom_set_a[i], atom_set_a[j]) for i, j in zip(*np.where(mask)) if i != j]
+        atom_pairs = [(atom_set_a[i], atom_set_a[j], distances[i, j]) for i, j in zip(*np.where(mask)) if i != j]
+
+        for a, b, e in atom_pairs:
+            restype, resnr, reschain = whichrestype(
+                a.atom), whichresnumber(
+                a.atom), whichchain(
+                a.atom)
+            is_sidechain_hc = is_sidechain(a.atom)
+            restype_l, resnr_l, reschain_l = "Lig", 1, "L"
+            contact = data(
+                bsatom=a.atom,
+                bsatom_orig_idx=a.orig_idx,
+                ligatom=b.atom,
+                ligatom_orig_idx=b.orig_idx,
+                sidechain=is_sidechain_hc,
+                distance=e,
+                restype=restype,
+                resnr=resnr,
+                reschain=reschain,
+                restype_l=restype_l,
+                resnr_l=resnr_l,
+                reschain_l=reschain_l
+                )
+            pairings.append(contact)
+        return filter_contacts(pairings)
 
     def find_unpaired_ligand(self):
         """Identify unpaired functional in groups in ligands, involving H-Bond donors, acceptors, halogen bond donors.

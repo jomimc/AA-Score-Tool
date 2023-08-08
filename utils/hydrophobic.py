@@ -5,6 +5,7 @@ radius = {"N": 1.8, "O": 1.7, "S": 2.0, "P": 2.1, "F": 1.5, "Cl": 1.8,
           "Si": 1.8, "As": 1.8, "Se": 1.8}
 
 def get_hyd_strength(dist, patom, latom):
+    # I DONT LIKE THIS!! 
     p_radii = radius.get(patom.GetSymbol(), 0.5)
     l_radii = radius.get(latom.GetSymbol(), 0.5)
 
