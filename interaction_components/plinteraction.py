@@ -961,8 +961,7 @@ class PLInteraction:
         self.pication_laro = self.refine_pi_cation_laro(
             self.all_pi_cation_laro, self.pistacking)
 
-        self.all_hydrophobic_contacts = hydrophobic_interactions(
-            self.protein.get_hydrophobic_atoms(), self.ligand.get_hydrophobic_atoms())
+        self.all_hydrophobic_contacts = hydrophobic_interactions(self.protein.get_hydrophobic_atoms())
         self.hydrophobic_contacts = self.refine_hydrophobic(
             self.all_hydrophobic_contacts, self.pistacking)
         self.halogen_bonds = halogen(

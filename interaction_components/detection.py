@@ -48,7 +48,7 @@ def filter_contacts(pairings):
 # FUNCTIONS FOR DETECTION OF SPECIFIC INTERACTIONS
 ##################################################
 
-def hydrophobic_interactions(atom_set_a, atom_set_b):
+def hydrophobic_interactions(atom_set_a):
     """Detection of hydrophobic pliprofiler between atom_set_a (binding site) and atom_set_b (ligand).
     Definition: All pairs of qualified carbon atoms within a distance of HYDROPH_DIST_MAX
     """
@@ -57,12 +57,21 @@ def hydrophobic_interactions(atom_set_a, atom_set_b):
         'bsatom bsatom_orig_idx ligatom ligatom_orig_idx sidechain '
         'distance restype resnr reschain restype_l resnr_l reschain_l')
     pairings = []
-    for a, b in itertools.product(atom_set_a, atom_set_b):
-        if a.orig_idx == b.orig_idx:
-            continue
-        e = euclidean3d(a.coords, b.coords)
-        if not config.MIN_DIST < e < config.HYDROPH_DIST_MAX:
-            continue
+
+    # prepared 1) atom_pairs beforehand 2) used numpy operations to filter those pairs
+    coords_a = np.array([a.coords for a in atom_set_a])
+    
+    #distances = np.sqrt(np.sum((coords_a[:, None] - coords_a) ** 2, axis=2))
+    distances = np.zeros((len(coords_a), len(coords_a)))
+    for i in range(len(coords_a)):
+        for j in range(i+1, len(coords_a)):
+            distances[i, j] = distances[j, i] = euclidean3d(coords_a[i], coords_a[j])
+            
+    mask = (config.MIN_DIST < distances) & (distances < config.HYDROPH_DIST_MAX)
+    #atom_pairs = [(atom_set_a[i], atom_set_a[j]) for i, j in zip(*np.where(mask)) if i != j]
+    atom_pairs = [(atom_set_a[i], atom_set_a[j], distances[i, j]) for i, j in zip(*np.where(mask)) if i != j]
+
+    for a, b, e in atom_pairs:
         restype, resnr, reschain = whichrestype(
             a.atom), whichresnumber(
             a.atom), whichchain(
@@ -81,7 +90,8 @@ def hydrophobic_interactions(atom_set_a, atom_set_b):
             reschain=reschain,
             restype_l=restype_l,
             resnr_l=resnr_l,
-            reschain_l=reschain_l)
+            reschain_l=reschain_l
+            )
         pairings.append(contact)
     return filter_contacts(pairings)
 
