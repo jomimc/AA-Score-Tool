@@ -669,6 +669,7 @@ class Ligand(Mol):
 class Protein(Mol):
     def __init__(self, mol):
         super(Protein, self).__init__(mol)
+        self.atoms_coords = self.getAll_atoms_coord()
         self.rings = self.find_rings()
         self.hydroph_atoms = self.hydrophobic_atoms()
         self.hbond_acc_atoms = self.find_hba()
@@ -688,8 +689,10 @@ class Protein(Mol):
 
         self.metals = []
         data = namedtuple('metal', 'm orig_m m_orig_idx m_coords')
-        for a in [a for a in self.all_atoms if a.GetSymbol().upper()
-                  in config.METAL_IONS]:
+        atomic_symbols = np.array([atom.GetSymbol().upper() for atom in self.all_atoms])
+        metal_atoms_mask = np.isin(atomic_symbols, config.METAL_IONS)
+
+        for a in np.array(self.all_atoms)[metal_atoms_mask]:
             m_orig_idx = a.GetIdx()
             orig_m = m_orig_idx
             self.metals.append(
@@ -697,14 +700,31 @@ class Protein(Mol):
                     m=a,
                     m_orig_idx=m_orig_idx,
                     orig_m=orig_m,
-                    m_coords=get_atom_coords(a)))
+                    m_coords=self.atoms_coords[m_orig_idx]))
+    
+    def getAll_atoms_coord(self):
+        atom_coords = np.zeros((len(self.all_atoms), 3))
+        for atom in self.all_atoms:
+            mol = atom.GetOwningMol()
+            conf = mol.GetConformers()[0]
+            pos = conf.GetAtomPosition(atom.GetIdx())
+            atom_coords[atom.GetIdx()] = (pos.x, pos.y, pos.z)
+        return atom_coords
 
     def hydrophobic_atoms(self):
         """Select all carbon atoms which have only carbons and/or hydrogens as direct neighbors."""
         atom_set = []
         data = namedtuple('hydrophobic', 'atom orig_atom orig_idx coords')
-        atm = [a for a in self.all_atoms if (a.GetAtomicNum() == 6 and set(
-            [natom.GetAtomicNum() for natom in a.GetNeighbors()]).issubset({1, 6}))]
+
+        atomic_nums = np.array([atom.GetAtomicNum() for atom in self.all_atoms])
+        is_atomic_num_6 = atomic_nums == 6
+        neighbors_1_or_6 = np.array([{natom.GetAtomicNum() for natom in atom.GetNeighbors()} <= {1, 6} for atom in self.all_atoms])
+        filter_mask = is_atomic_num_6 & neighbors_1_or_6
+        atm = np.array(self.all_atoms)[filter_mask]
+
+        # atm = [a for a in self.all_atoms if (a.GetAtomicNum() == 6 and set(
+        #     [natom.GetAtomicNum() for natom in a.GetNeighbors()]).issubset({1, 6}))]
+        
         for atom in atm:
             orig_idx = atom.GetIdx()
             orig_atom = orig_idx
@@ -713,7 +733,7 @@ class Protein(Mol):
                     atom=atom,
                     orig_atom=orig_atom,
                     orig_idx=orig_idx,
-                    coords=get_atom_coords(atom)))
+                    coords=self.atoms_coords[orig_idx]))
         return atom_set
 
     def find_hba(self):
@@ -731,7 +751,7 @@ class Protein(Mol):
                         a_orig_atom=a_orig_atom,
                         a_orig_idx=a_orig_idx,
                         type='regular',
-                        coords=get_atom_coords(atom)))
+                        coords=self.atoms_coords[a_orig_idx]))
         a_set = sorted(a_set, key=lambda x: x.a_orig_idx)
         return a_set
 
@@ -747,8 +767,8 @@ class Protein(Mol):
                         a for a in donor.GetNeighbors() if a.GetAtomicNum() == 1]:
                     d_orig_idx = donor.GetIdx()
                     d_orig_atom = donor
-                    d_coords = get_atom_coords(donor)
-                    h_coords = get_atom_coords(adj_atom)
+                    d_coords = self.atoms_coords[d_orig_idx]
+                    h_coords = self.atoms_coords[adj_atom.GetIdx()]
                     donor_pairs.append(
                         data(
                             d=donor,
@@ -764,8 +784,8 @@ class Protein(Mol):
                     a for a in carbon.atom.GetNeighbors() if a.GetAtomicNum() == 1]:
                 d_orig_idx = carbon.atom.GetIdx()
                 d_orig_atom = carbon.atom
-                d_coords = get_atom_coords(carbon.atom)
-                h_coords = get_atom_coords(adj_atom)
+                d_coords = self.atoms_coords[d_orig_idx]
+                h_coords = self.atoms_coords[adj_atom.GetIdx()]
                 donor_pairs.append(
                     data(
                         d=carbon,
@@ -795,8 +815,8 @@ class Protein(Mol):
             if len(n_atoms) == 1:  # Proximal atom
                 o_orig_idx = a.GetIdx()
                 y_orig_idx = n_atoms[0].GetIdx()
-                o_coords = get_atom_coords(a)
-                y_coords = get_atom_coords(n_atoms[0])
+                o_coords = self.atoms_coords[o_orig_idx]
+                y_coords = self.atoms_coords[y_orig_idx]
                 a_set.append(data(o=a, o_orig_idx=o_orig_idx, y=n_atoms[0],
                                   y_orig_idx=y_orig_idx, o_coords=o_coords,
                                   y_coords=y_coords))
@@ -827,7 +847,7 @@ class Protein(Mol):
                             type='positive',
                             center=centroid(
                                 [
-                                    get_atom_coords(ac) for ac in a_contributing]),
+                                    self.atoms_coords[ac.GetIdx()] for ac in a_contributing]),
                             restype=res.residue_name,
                             resnr=res.residue_number,
                             reschain=res.residue_chain))
@@ -844,7 +864,7 @@ class Protein(Mol):
                             type='negative',
                             center=centroid(
                                 [
-                                    get_atom_coords(ac) for ac in a_contributing]),
+                                    self.atoms_coords[ac.GetIdx()] for ac in a_contributing]),
                             restype=res.residue_name,
                             resnr=res.residue_number,
                             reschain=res.residue_chain))
@@ -872,7 +892,7 @@ class Protein(Mol):
                                 restype=restype,
                                 resnr=resnr,
                                 reschain=reschain,
-                                coords=get_atom_coords(a),
+                                coords=self.atoms_coords[atom_orig_idx],
                                 location='protein.sidechain'))
             if restype == 'HIS':  # Look for nitrogen here
                 for a in res.residue_atoms:
@@ -886,7 +906,7 @@ class Protein(Mol):
                                 restype=restype,
                                 resnr=resnr,
                                 reschain=reschain,
-                                coords=get_atom_coords(a),
+                                coords=self.atoms_coords[atom_orig_idx],
                                 location='protein.sidechain'))
             if restype == 'CYS':  # Look for sulfur here
                 for a in res.residue_atoms:
@@ -900,7 +920,7 @@ class Protein(Mol):
                                 restype=restype,
                                 resnr=resnr,
                                 reschain=reschain,
-                                coords=get_atom_coords(a),
+                                coords=self.atoms_coords[atom_orig_idx],
                                 location='protein.sidechain'))
 
             for a in res.residue_atoms:  # All main chain oxygens
@@ -914,7 +934,7 @@ class Protein(Mol):
                             restype=res.residue_name,
                             resnr=res.residue_number,
                             reschain=reschain,
-                            coords=get_atom_coords(a),
+                            coords=self.atoms_coords[atom_orig_idx],
                             location='protein.mainchain'))
         return a_set
 
