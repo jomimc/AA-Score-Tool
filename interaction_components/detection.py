@@ -153,6 +153,8 @@ def pistacking(rings_bs, rings_lig):
     for r, l in itertools.product(rings_bs, rings_lig):
         # DISTANCE AND RING ANGLE CALCULATION
         d = euclidean3d(r.center, l.center)
+        if not config.MIN_DIST < d < config.PISTACK_DIST_MAX:
+            continue
         b = vecangle(r.normal, l.normal)
         # Smallest of two angles, depending on direction of normal
         a = min(b, 180 - b if not 180 - b < 0 else b)
@@ -167,38 +169,35 @@ def pistacking(rings_bs, rings_lig):
                 proj2, r.center))
 
         # RECEPTOR DATA
-        resnr, restype, reschain = whichresnumber(
-            r.atoms[0]), whichrestype(
-            r.atoms[0]), whichchain(
-            r.atoms[0])
-        resnr_l, restype_l, reschain_l = 1, "Lig", "L"
+        # resnr, restype, reschain = whichresnumber(
+        #     r.atoms[0]), whichrestype(
+        #     r.atoms[0]), whichchain(
+        #     r.atoms[0])
+        # resnr_l, restype_l, reschain_l = 1, "Lig", "L"
 
-        # SELECTION BY DISTANCE, ANGLE AND OFFSET
-        passed = False
-        if not config.MIN_DIST < d < config.PISTACK_DIST_MAX:
-            continue
+        # SELECTION BY ANGLE AND OFFSET
         if 0 < a < config.PISTACK_ANG_DEV and offset < config.PISTACK_OFFSET_MAX:
             ptype = 'P'
-            passed = True
-        if 90 - config.PISTACK_ANG_DEV < a < 90 + \
+        elif 90 - config.PISTACK_ANG_DEV < a < 90 + \
                 config.PISTACK_ANG_DEV and offset < config.PISTACK_OFFSET_MAX:
             ptype = 'T'
-            passed = True
-        if passed:
-            contact = data(
-                proteinring=r,
-                ligandring=l,
-                distance=d,
-                angle=a,
-                offset=offset,
-                type=ptype,
-                resnr=resnr,
-                restype=restype,
-                reschain=reschain,
-                resnr_l=resnr_l,
-                restype_l=restype_l,
-                reschain_l=reschain_l)
-            pairings.append(contact)
+        else:
+            continue
+
+        # contact = data(
+        #     proteinring=r,
+        #     ligandring=l,
+        #     distance=d,
+        #     angle=a,
+        #     offset=offset,
+        #     type=ptype,
+        #     resnr=resnr,
+        #     restype=restype,
+        #     reschain=reschain,
+        #     resnr_l=resnr_l,
+        #     restype_l=restype_l,
+        #     reschain_l=reschain_l)
+        pairings.append(data(type=ptype))
     return filter_contacts(pairings)
 
 
