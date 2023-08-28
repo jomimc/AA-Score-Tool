@@ -131,11 +131,11 @@ def pistacking(rings_bs, rings_lig):
                 proj2, r.center))
 
         # RECEPTOR DATA
-        # resnr, restype, reschain = whichresnumber(
-        #     r.atoms[0]), whichrestype(
-        #     r.atoms[0]), whichchain(
-        #     r.atoms[0])
-        # resnr_l, restype_l, reschain_l = 1, "Lig", "L"
+        resnr, restype, reschain = whichresnumber(
+            r.atoms[0]), whichrestype(
+            r.atoms[0]), whichchain(
+            r.atoms[0])
+        resnr_l, restype_l, reschain_l = 1, "Lig", "L"
 
         # SELECTION BY ANGLE AND OFFSET
         if 0 < a < config.PISTACK_ANG_DEV and offset < config.PISTACK_OFFSET_MAX:
@@ -146,20 +146,20 @@ def pistacking(rings_bs, rings_lig):
         else:
             continue
 
-        # contact = data(
-        #     proteinring=r,
-        #     ligandring=l,
-        #     distance=d,
-        #     angle=a,
-        #     offset=offset,
-        #     type=ptype,
-        #     resnr=resnr,
-        #     restype=restype,
-        #     reschain=reschain,
-        #     resnr_l=resnr_l,
-        #     restype_l=restype_l,
-        #     reschain_l=reschain_l)
-        pairings.append(data(type=ptype))
+        contact = data(
+            proteinring=r,
+            ligandring=l,
+            distance=d,
+            angle=a,
+            offset=offset,
+            type=ptype,
+            resnr=resnr,
+            restype=restype,
+            reschain=reschain,
+            resnr_l=resnr_l,
+            restype_l=restype_l,
+            reschain_l=reschain_l)
+        pairings.append(contact)
     return filter_contacts(pairings)
 
 
