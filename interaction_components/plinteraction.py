@@ -1,5 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
+try:
+    from openbabel import pybel
+except:
+    import pybel
+
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import ChemicalFeatures
@@ -17,7 +22,8 @@ from interaction_components.utils import whichchain, whichatomname, whichrestype
 from interaction_components.detection import halogen, pication, water_bridges, metal_complexation
 from interaction_components.detection import filter_contacts, pistacking, hbonds, saltbridge
 from interaction_components import config
-
+from scipy.spatial.distance import  cdist
+from utils.vdw import calc_vdw
 
 def get_features(mol):
     donors, acceptors, hydrophobics = [], [], []
@@ -957,7 +963,6 @@ class Protein(Mol):
                             location='protein.mainchain'))
         return a_set
 
-
 class PLInteraction:
     """Class to store a ligand, a protein and their interactions."""
 
@@ -1029,10 +1034,12 @@ class PLInteraction:
             self.unpaired_hba), len(self.unpaired_hbd)
         self.num_unpaired_hal = len(self.unpaired_hal)
 
+        self.dist_mat = self.calc_dist_mat(lig_obj, bs_obj)
         self.atomic_radii_sum = self.calc_atomic_radii_sum(lig_obj, bs_obj)
 
         self.hphob_idx = self.hphob_calcInd(lig_obj)
         self.hbond_idx = self.hbond_calcInd()
+        self.vdw_idx = self.vdw_calcInd(lig_obj, bs_obj)
 
         # Exclude empty chains (coming from ligand as a target, from metal
         # complexes)
@@ -1094,6 +1101,16 @@ class PLInteraction:
         if len(idx) == 0:
             print("WARNING! No hydrogen bonds found!")
         return idx    
+    
+    def vdw_calcInd(self, protein, ligand):
+        not_hyd_idx = np.where(protein.atomic_symbol != 'H')[0]
+        i, j = np.where(self.dist_mat[not_hyd_idx][:,not_hyd_idx] < 6.0)
+        return np.array([not_hyd_idx[i], not_hyd_idx[j]]).T
+    
+    def calc_dist_mat(self, protein, ligand):
+       # Calculate the pairwise distances between binding site and ligand atoms
+        dist_matrix = cdist(protein.atoms_coords, protein.atoms_coords, 'euclidean')
+        return dist_matrix
     
     def calc_atomic_radii_sum(self, protein, ligand):
        # Calculate the sum of atomic radii between binding site and ligand atoms
