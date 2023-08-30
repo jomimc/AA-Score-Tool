@@ -669,6 +669,11 @@ class Ligand(Mol):
 class Protein(Mol):
     def __init__(self, mol):
         super(Protein, self).__init__(mol)
+
+        self.atomic_symbol = np.array([atom.GetSymbol() for atom in self.all_atoms])
+        self.atomic_radii = self.calculate_atomic_radii()
+        self.partial_charges = self.calculate_partial_charges(mol)
+
         self.atoms_coords = self.getAll_atoms_coord()
         self.rings = self.find_rings()
         self.hydroph_atoms = self.hydrophobic_atoms()
@@ -701,7 +706,24 @@ class Protein(Mol):
                     m_orig_idx=m_orig_idx,
                     orig_m=orig_m,
                     m_coords=self.atoms_coords[m_orig_idx]))
+    def get_atomic_radius(self, atom):
+        radius = {"N": 1.8, "O": 1.7, "S": 2.0, "P": 2.1, "F": 1.5, "Cl": 1.8,
+          "Br": 2.0, "I": 2.2, "C": 1.9, "H": 0.0, "Zn": 0.5, "B": 1.8,
+          "Si": 1.8, "As": 1.8, "Se": 1.8}
+        atomic_symbol = atom.GetSymbol()
+        return radius.get(atomic_symbol, np.nan) 
     
+    def calculate_atomic_radii(self):
+        atomic_radii = np.zeros(len(self.all_atoms))
+        for i, atom in enumerate(self.all_atoms):
+            atomic_radii[i] = self.get_atomic_radius(atom)
+        return atomic_radii
+    
+    def calculate_partial_charges(self, mol_prot):
+        mol = pybel.readstring("pdb", Chem.MolToPDBBlock(mol_prot))
+        charges = [mol.atoms[atom.GetIdx()].partialcharge for atom in self.all_atoms]
+        return np.array(charges)
+                                    
     def getAll_atoms_coord(self):
         atom_coords = np.zeros((len(self.all_atoms), 3))
         for atom in self.all_atoms:
@@ -722,9 +744,6 @@ class Protein(Mol):
         filter_mask = is_atomic_num_6 & neighbors_1_or_6
         atm = np.array(self.all_atoms)[filter_mask]
 
-        # atm = [a for a in self.all_atoms if (a.GetAtomicNum() == 6 and set(
-        #     [natom.GetAtomicNum() for natom in a.GetNeighbors()]).issubset({1, 6}))]
-        
         for atom in atm:
             orig_idx = atom.GetIdx()
             orig_atom = orig_idx
