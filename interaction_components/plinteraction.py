@@ -1029,6 +1029,11 @@ class PLInteraction:
             self.unpaired_hba), len(self.unpaired_hbd)
         self.num_unpaired_hal = len(self.unpaired_hal)
 
+        self.atomic_radii_sum = self.calc_atomic_radii_sum(lig_obj, bs_obj)
+
+        self.hphob_idx = self.hphob_calcInd(lig_obj)
+        self.hbond_idx = self.hbond_calcInd()
+
         # Exclude empty chains (coming from ligand as a target, from metal
         # complexes)
         self.interacting_chains = sorted(list(set([i.reschain for i in self.all_itypes
@@ -1069,6 +1074,31 @@ class PLInteraction:
             # raise RuntimeWarning('no interactions for this ligand')
             print('no interactions for this ligand')
 
+    def hphob_calcInd(self, protein):
+        indices = []
+        hydrophobic_interactions = self.hydrophobic_interactions(protein.get_hydrophobic_atoms())
+        
+        for interaction in hydrophobic_interactions:
+            i = interaction.bsatom_orig_idx
+            j = interaction.ligatom_orig_idx
+            indices.append([i, j])
+        idx = np.array(indices, int)
+        if len(idx) == 0:
+            print("WARNING! No hydrophobic contacts found!")
+        return idx
+    
+    def hbond_calcInd(self):
+        hbonds_ldon_indices = [[hb.d.GetIdx(), hb.a.GetIdx()] for hb in self.hbonds_ldon]
+        hbonds_pdon_indices = [[hb.a.GetIdx(), hb.d.GetIdx()] for hb in self.hbonds_pdon]
+        idx = np.array(hbonds_ldon_indices + hbonds_pdon_indices, int)
+        if len(idx) == 0:
+            print("WARNING! No hydrogen bonds found!")
+        return idx    
+    
+    def calc_atomic_radii_sum(self, protein, ligand):
+       # Calculate the sum of atomic radii between binding site and ligand atoms
+        return np.sum(np.meshgrid(protein.atomic_radii, ligand.atomic_radii), axis=0)
+    
     def hydrophobic_interactions(self, atom_set_a):
         """Detection of hydrophobic pliprofiler between atom_set_a (binding site) and atom_set_b (ligand).
         Definition: All pairs of qualified carbon atoms within a distance of HYDROPH_DIST_MAX
