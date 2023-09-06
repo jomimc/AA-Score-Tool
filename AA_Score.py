@@ -7,13 +7,12 @@ from rdkit.Chem import AllChem
 from utils.hbonds import calc_hbond_strength
 from utils.hydrophobic import calc_hydrophobic
 from utils.vdw import calc_vdw
-from utils.electrostatic import Electrostatic
 import os
 import sys
 import argparse
 
 
-#import time
+# import time
 
 residue_names = [
     "HIS",
@@ -174,11 +173,9 @@ def calc_pication_descriptor(interactions):
 
 ### THIS IS THE MAIN FUNCTION TO RUN
 def calc_score(mol_prot):
-    ### RUN THIS ONCE, AND SAVE "result" and "interactions"
     result = get_interactions(mol_prot)
     interactions = result.interactions
 
-    ### THEN OPTIMIZE THIS PART
     hbond_energy = calc_hbonds_descriptor(result.prot, interactions)
     hphob_energy = calc_hydrophybic_descriptor(result.prot, interactions)
     vdw_energy = calc_vdw_descriptor(result.prot, interactions)
@@ -201,7 +198,6 @@ def run_test(protein_file, output_file=None):
     # end_time = time.time()
     # time_spend = end_time - start_time
     # print(f"time spend: {time_spend} seconds")
-
     # if output_file:
     #     with open(output_file, "a") as f:
     #         f.write(name + "\t" + str(score) + "\n")
