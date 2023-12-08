@@ -163,7 +163,7 @@ def pistacking(rings_bs, rings_lig):
     return filter_contacts(pairings)
 
 
-def pication(rings, pos_charged, protcharged):
+def pication(rings, pos_charged_coord):
     """Return all pi-Cation interaction between aromatic rings and positively charged groups.
     For tertiary and quaternary amines, check also the angle between the ring and the nitrogen.
     """
@@ -173,52 +173,63 @@ def pication(rings, pos_charged, protcharged):
     pairings = []
     if len(rings) == 0 or len(pos_charged) == 0:
         return pairings
-    for ring in rings:
+    ring_center = np.array([r.center for r in rings])
+    ring_pos_dist = cdist(ring_center, pos_charged_coord)
+
+    # Do the distance check first
+    dist_okay = ((config.MIN_DIST < ring_pos_dist) & (ring_pos_dist < config.PICATION_DIST_MAX))
+    i0, j0 = np.wherei(dist_okay)
+
+#                 or not offset < config.PISTACK_OFFSET_MAX:
+    for i in i0:
+        ring = rings[i]
         c = ring.center
-        for p in pos_charged:
-            d = euclidean3d(c, p.center)
+        for j in j0:
+            pos_pos = pos_charged_coord[j]
             # Project the center of charge into the ring and measure distance
             # to ring center
-            proj = projection(ring.normal, ring.center, p.center)
+            proj = projection(ring.normal, ring.center, pos_pos)
             offset = euclidean3d(proj, ring.center)
-            if not config.MIN_DIST < d < config.PICATION_DIST_MAX or not offset < config.PISTACK_OFFSET_MAX:
+            if offset > config.PISTACK_OFFSET_MAX:
                 continue
-            if type(p).__name__ == 'lcharge' and p.fgroup == 'tertamine':
-                # Special case here if the ligand has a tertiary amine, check an additional angle
-                # Otherwise, we might have have a pi-cation interaction
-                # 'through' the ligand
-                n_atoms = [
-                    a_neighbor for a_neighbor in p.atoms[0].GetNeighbors()]
-                n_atoms_coords = [get_atom_coords(a) for a in n_atoms]
-                amine_normal = np.cross(
-                    vector(
-                        n_atoms_coords[0], n_atoms_coords[1]), vector(
-                        n_atoms_coords[2], n_atoms_coords[0]))
-                b = vecangle(ring.normal, amine_normal)
-                # Smallest of two angles, depending on direction of normal
-                a = min(b, 180 - b if not 180 - b < 0 else b)
-                if not a > 30.0:
-                    resnr, restype = whichresnumber(
-                        ring.atoms[0]), whichrestype(
-                        ring.atoms[0])
-                    reschain = whichchain(ring.atoms[0])
-                    resnr_l, restype_l = 1, "Lig"
-                    reschain_l = "L"
-                    contact = data(
-                        ring=ring,
-                        charge=p,
-                        distance=d,
-                        offset=offset,
-                        type='regular',
-                        restype=restype,
-                        resnr=resnr,
-                        reschain=reschain,
-                        restype_l=restype_l,
-                        resnr_l=resnr_l,
-                        reschain_l=reschain_l,
-                        protcharged=protcharged)
-                    pairings.append(contact)
-                break
+
+            # IGNORE FOR NOW
+#           if type(p).__name__ == 'lcharge' and p.fgroup == 'tertamine':
+#               # Special case here if the ligand has a tertiary amine, check an additional angle
+#               # Otherwise, we might have have a pi-cation interaction
+#               # 'through' the ligand
+#               n_atoms = [
+#                   a_neighbor for a_neighbor in p.atoms[0].GetNeighbors()]
+#               n_atoms_coords = [get_atom_coords(a) for a in n_atoms]
+#               amine_normal = np.cross(
+#                   vector(
+#                       n_atoms_coords[0], n_atoms_coords[1]), vector(
+#                       n_atoms_coords[2], n_atoms_coords[0]))
+#               b = vecangle(ring.normal, amine_normal)
+#               # Smallest of two angles, depending on direction of normal
+#               a = min(b, 180 - b if not 180 - b < 0 else b)
+#               if not a > 30.0:
+#                   resnr, restype = whichresnumber(
+#                       ring.atoms[0]), whichrestype(
+#                       ring.atoms[0])
+#                   reschain = whichchain(ring.atoms[0])
+#                   resnr_l, restype_l = 1, "Lig"
+#                   reschain_l = "L"
+#                   contact = data(
+#                       ring=ring,
+#                       charge=p,
+#                       distance=d,
+#                       offset=offset,
+#                       type='regular',
+#                       restype=restype,
+#                       resnr=resnr,
+#                       reschain=reschain,
+#                       restype_l=restype_l,
+#                       resnr_l=resnr_l,
+#                       reschain_l=reschain_l,
+#                       protcharged=protcharged)
+#                   pairings.append(contact)
+#               break
             resnr = whichresnumber(
                 p.atoms[0]) if protcharged else whichresnumber(
                 ring.atoms[0])

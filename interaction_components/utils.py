@@ -4,7 +4,7 @@ import itertools
 from interaction_components import config
 import numpy as np
 from collections import namedtuple
-from scipy.spatial.distance import euclidean
+from scipy.spatial.distance import euclidean, cdist
 
 atom_prop_dict = config.atom_prop_dict
 biolip_list = config.biolip_list
@@ -112,19 +112,17 @@ def get_coord(mol_conf, idx):
     return (pos.x, pos.y, pos.z)
 
 
-def ring_is_planar(mol_conf, ring, r_atoms):
+def ring_is_planar(atom_coord, ring, r_atoms):
     """Given a set of ring atoms, check if the ring is sufficiently planar
     to be considered aromatic"""
     normals = []
-    for a in r_atoms:
-        a_pos = mol_conf.GetAtomPosition(a.GetIdx())
-        a_coord = (a_pos.x, a_pos.y, a_pos.z)
+    ring_dist = cdist(atom_coord, atom_coord)
+    for i, (a, a_coord) in enumerate(zip(r_atoms, atom_coord)):
 
         adj = a.GetNeighbors()
         # Check for neighboring atoms in the ring
-        n_neighs_idx = [neigh.GetIdx()
-                        for neigh in adj if neigh.GetIdx() in ring]
-        n_coords = get_coords(mol_conf, n_neighs_idx)
+        neigh_idx = np.argsort(ring_dist[i])[1:3]
+        n_coords = atom_coord[neigh_idx]
         vec1, vec2 = vector(a_coord, n_coords[0]), vector(a_coord, n_coords[1])
         normals.append(np.cross(vec1, vec2))
     # Given all normals of ring atoms and their neighbors, the angle between
@@ -428,36 +426,32 @@ def int32_to_negative(int32):
         return int32
 
 
-def is_donor(atom):
-    if atom.GetSymbol() in ["H", "C"]:
+def is_donor(atom_name, res_name):
+    res_atom_name = f"{res_name}_{atom_name}"
+#   print(res_atom_name)
+    if res_atom_name not in atom_prop_dict.keys():
         return False
-    restype = whichrestype(atom)
-    atomname = whichatomname(atom)
-    # if restype in biolip_list:
-    #    return False
-    res_name = restype + "_" + atomname
-    if res_name not in atom_prop_dict.keys():
-        return False
-    atom_prop = atom_prop_dict[res_name]
-    if "Donor" in atom_prop:
+
+    # Check against a list of known donors 
+    # according to residue and atom name
+    if "Donor" in atom_prop_dict[res_atom_name]:
         return True
     else:
         return False
 
 
-def is_acceptor(atom):
-    if atom.GetSymbol() in["H", "C"]:
+### Need atom name and residue name
+def is_acceptor(atom_name, res_name):
+    if res_name == "HIN":
+        res_name = "HIS"
+
+    res_atom_name = f"{res_name}_{atom_name}"
+    if res_atom_name not in atom_prop_dict.keys():
         return False
-    restype = whichrestype(atom)
-    if restype == "HIN":
-        restype = "HIS"
-    atomname = whichatomname(atom)
-    res_name = restype + "_" + atomname
-    if res_name not in atom_prop_dict.keys():
-        #print("warning atom: idx {} res_name {}".format(atom.GetIdx(), res_name))
-        return False
-    atom_prop = atom_prop_dict[res_name]
-    if "Acceptor" in atom_prop:
+
+    # Check against a list of known acceptors
+    # according to residue and atom name
+    if "Acceptor" in atom_prop_dict[res_atom_name]:
         return True
     else:
         return False

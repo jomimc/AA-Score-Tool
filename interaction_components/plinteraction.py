@@ -25,6 +25,8 @@ from interaction_components import config
 from scipy.spatial.distance import  cdist
 from utils.vdw import calc_vdw
 
+import time
+
 def get_features(mol):
     donors, acceptors, hydrophobics = [], [], []
     for atom in mol.GetAtoms():
@@ -50,7 +52,6 @@ def get_features(mol):
 class Mol:
     def __init__(self, mol):
         self.mol = mol
-        self.all_atoms = mol.GetAtoms()
         self.mol_conf = mol.GetConformers()[0]
         self.rings = None
         self.hydroph_atoms = None
@@ -63,57 +64,6 @@ class Mol:
 
     def find_hbd(self):
         raise Exception("have to find hbond donors!")
-
-    def find_rings(self):
-        """Find rings and return only aromatic.
-        Rings have to be sufficiently planar OR be detected by OpenBabel as aromatic."""
-        data = namedtuple(
-            'aromatic_ring',
-            'atoms orig_atoms atoms_orig_idx normal obj center type')
-        rings = []
-        aromatic_amino = ['TYR', 'TRP', 'HIS', 'PHE']
-
-        ring_info = self.mol.GetRingInfo()
-
-        rings_atom_idx = ring_info.AtomRings()
-        for ring in rings_atom_idx:
-            r_atoms = [self.mol.GetAtomWithIdx(idx) for idx in ring]
-            r_atoms = sorted(r_atoms, key=lambda x: x.GetIdx())
-
-            if 4 < len(ring) <= 6:
-                res = list(set([whichrestype(a) for a in r_atoms]))
-                if res[0] == "UNL":
-                    ligand_orig_idx = ring
-                    sort_order = np.argsort(np.array(ligand_orig_idx))
-                    r_atoms = [r_atoms[i] for i in sort_order]
-                if is_aromatic(r_atoms) or res[0] in aromatic_amino or ring_is_planar(
-                        self.mol_conf, ring, r_atoms):
-                    ring_type = '%s-membered' % len(ring)
-                    ring_atms = get_coords(
-                        self.mol_conf, [
-                            r_atoms[0].GetIdx(), r_atoms[2].GetIdx(), r_atoms[4].GetIdx()])
-                    ringv1 = vector(ring_atms[0], ring_atms[1])
-                    ringv2 = vector(ring_atms[2], ring_atms[0])
-
-                    atoms_orig_idx = [r_atom.GetIdx() for r_atom in r_atoms]
-                    orig_atoms = r_atoms
-                    rings.append(
-                        data(
-                            atoms=r_atoms,
-                            orig_atoms=orig_atoms,
-                            atoms_orig_idx=atoms_orig_idx,
-                            normal=normalize_vector(
-                                np.cross(
-                                    ringv1,
-                                    ringv2)),
-                            obj=ring,
-                            center=centroid(
-                                get_coords(
-                                    self.mol_conf,
-                                    ring)),
-                            type=ring_type))
-
-        return rings
 
     def find_hal(self):
         """Look for halogen bond acceptors (Y-{O|P|N|S}, with Y=C,P,S)"""
@@ -154,570 +104,108 @@ class Mol:
         return [
             don_pair for don_pair in self.hbond_don_atom_pairs if don_pair.type == 'weak']
 
-    def get_pos_charged(self):
-        return [charge for charge in self.charged if charge.type == 'positive']
-
-    def get_neg_charged(self):
-        return [charge for charge in self.charged if charge.type == 'negative']
 
 
-class Ligand(Mol):
-    def __init__(self, mol, mol_water):
-        super(Ligand, self).__init__(mol)
-        self.smiles = Chem.MolToSmiles(mol)
-        self.heavy_atoms = mol.GetNumHeavyAtoms()  # Heavy atoms count
-        self.features = get_features(mol)
-        self.rings = self.find_rings()
-        self.hydroph_atoms = self.hydrophobic_atoms()
-        self.hbond_acc_atoms = self.find_hba()
-        self.num_rings = len(self.rings)
-
-        self.num_rot_bonds = Descriptors.NumRotatableBonds(mol)
-
-        self.hbond_don_atom_pairs = self.find_hbd()
-
-        self.charged = self.find_charged()
-        self.centroid = np.round(
-            self.mol_conf.GetPositions().mean(
-                axis=0), 5).tolist()
-        self.max_dist_to_center = max(
-            (euclidean3d(
-                self.centroid,
-                get_coord(
-                    self.mol_conf,
-                    a.GetIdx())) for a in mol.GetAtoms()))
-
-        self.water = []
-        if mol_water is not None:
-            self.mol_water = mol_water
-            self.mol_water_conf = mol_water.GetConformers()[0]
-            data = namedtuple('water', 'oxy oxy_orig_idx oxy_coords')
-            for hoh in self.mol_water.GetAtoms():
-                oxy = None
-                if hoh.GetAtomicNum() == 8:
-                    oxy = hoh
-                if oxy is not None:
-                    if euclidean3d(self.centroid, get_atom_coords(
-                            oxy)) < self.max_dist_to_center + config.BS_DIST:
-                        oxy_orig_idx = oxy.GetIdx()
-                        oxy_coords = get_atom_coords(oxy)
-                        self.water.append(
-                            data(
-                                oxy=oxy,
-                                oxy_orig_idx=oxy_orig_idx,
-                                oxy_coords=oxy_coords))
-
-        self.halogenbond_don = self.find_hal()
-
-        self.metal_binding = self.find_metal_binding()
-        self.num_hba, self.num_hbd = len(
-            self.hbond_acc_atoms), len(
-            self.hbond_don_atom_pairs)
-        self.num_hal = len(self.halogenbond_don)
-
-    def hydrophobic_atoms(self):
-        """Select all carbon atoms which have only carbons and/or hydrogens as direct neighbors."""
-        atom_set = []
-        data = namedtuple('hydrophobic', 'atom orig_atom orig_idx coords')
-        atom_idx_set = self.features.hydrophobics
-        atm = [self.mol.GetAtomWithIdx(idx) for idx in atom_idx_set]
-
-        for atom in atm:
-            orig_idx = atom.GetIdx()
-            orig_atom = orig_idx
-            atom_set.append(
-                data(
-                    atom=atom,
-                    orig_atom=orig_atom,
-                    orig_idx=orig_idx,
-                    coords=get_atom_coords(atom)))
-        return atom_set
-
-    def find_hba(self):
-        """Find all possible hydrogen bond acceptors"""
-        data = namedtuple(
-            'hbondacceptor',
-            'a a_orig_atom a_orig_idx type coords')
-        a_set = []
-
-        atom_idx_set = self.features.acceptors
-        atm = [self.mol.GetAtomWithIdx(idx) for idx in atom_idx_set]
-
-        for atom_idx, atom in zip(atom_idx_set, atm):
-            if atom.GetAtomicNum() not in [
-                    9, 17, 35, 53]:  # Exclude halogen atoms
-                a_orig_idx = atom_idx
-                a_orig_atom = atom
-                coords = get_atom_coords(atom)
-                a_set.append(
-                    data(
-                        a=atom,
-                        a_orig_atom=a_orig_atom,
-                        a_orig_idx=a_orig_idx,
-                        type='regular',
-                        coords=coords))
-        a_set = sorted(a_set, key=lambda x: x.a_orig_idx)
-        return a_set
-
-    def find_hbd(self):
-        """Find all possible strong and weak hydrogen bonds donors (all hydrophobic C-H pairings)"""
-        donor_pairs = []
-        data = namedtuple(
-            'hbonddonor',
-            'd d_orig_atom d_orig_idx h type d_coords h_coords')
-
-        donor_idxs = self.features.donors
-        donor_atoms = [self.mol.GetAtomWithIdx(idx) for idx in donor_idxs]
-
-        for donor_idx, donor_atom in zip(donor_idxs, donor_atoms):
-            in_ring = False
-            if not in_ring:
-                for adj_atom in [
-                        a for a in donor_atom.GetNeighbors() if a.GetAtomicNum() == 1]:
-                    d_orig_idx = donor_idx
-                    d_orig_atom = donor_atom
-                    d_coords = get_atom_coords(donor_atom)
-                    h_coords = get_atom_coords(adj_atom)
-                    donor_pairs.append(
-                        data(
-                            d=donor_atom,
-                            d_orig_atom=d_orig_atom,
-                            d_orig_idx=d_orig_idx,
-                            h=adj_atom,
-                            type='regular',
-                            d_coords=d_coords,
-                            h_coords=h_coords))
-
-        for carbon in self.hydroph_atoms:
-            for adj_atom in [
-                    a for a in carbon.atom.GetNeighbors() if a.GetAtomicNum() == 1]:
-                d_orig_idx = carbon.atom.GetIdx()
-                d_orig_atom = carbon.atom
-                d_coords = get_atom_coords(carbon.atom)
-                h_coords = get_atom_coords(adj_atom)
-                donor_pairs.append(
-                    data(
-                        d=carbon,
-                        d_orig_atom=d_orig_atom,
-                        d_orig_idx=d_orig_idx,
-                        h=adj_atom,
-                        type='weak',
-                        d_coords=d_coords,
-                        h_coords=h_coords))
-        donor_pairs = sorted(
-            donor_pairs, key=lambda x: (
-                x.d_orig_idx, x.h.GetIdx()))
-        return donor_pairs
-
-    def find_hal(self):
-        """Look for halogen bond donors (X-C, with X=F, Cl, Br, I)"""
-        data = namedtuple(
-            'hal_donor',
-            'x orig_x x_orig_idx c c_orig_idx x_coords c_coords')
-        a_set = []
-        for a in self.all_atoms:
-            if self.is_functional_group(a, 'halocarbon'):
-                n_atoms = [
-                    na for na in a.GetNeighbors() if na.GetAtomicNum() == 6]
-                x_orig_idx = a.GetIdx()
-                orig_x = x_orig_idx
-                c_orig_idx = [na.GetIdx() for na in n_atoms]
-                x_coords = get_atom_coords(a)
-                c_coords = get_atom_coords(n_atoms[0])
-                a_set.append(data(x=a, orig_x=orig_x, x_orig_idx=x_orig_idx,
-                                  c=n_atoms[0], c_orig_idx=c_orig_idx,
-                                  x_coords=x_coords, c_coords=c_coords))
-        if len(a_set) != 0:
-            #print(f'ligand contains {len(a_set)} halogen atom(s)')
-            pass
-        return a_set
-
-    def find_charged(self):
-        """Identify all positively charged groups in a ligand. This search is not exhaustive, as the cases can be quite
-        diverse. The typical cases seem to be protonated amines, quaternary ammoinium and sulfonium
-        as mentioned in 'Cation-pi interactions in ligand recognition and catalysis' (Zacharias et al., 2002)).
-        Identify negatively charged groups in the ligand.
-        """
-        data = namedtuple(
-            'lcharge',
-            'atoms orig_atoms atoms_orig_idx type center fgroup')
-        a_set = []
-        for a in self.mol.GetAtoms():
-            a_orig_idx = a.GetIdx()
-            a_orig = a.GetIdx()
-            if self.is_functional_group(a, 'quartamine'):
-                a_set.append(
-                    data(
-                        atoms=[
-                            a, ], orig_atoms=[
-                            a_orig, ], atoms_orig_idx=[
-                            a_orig_idx, ], type='positive', center=list(
-                            get_coord(
-                                self.mol_conf, a.GetIdx())), fgroup='quartamine'))
-            elif self.is_functional_group(a, 'tertamine'):
-                a_set.append(
-                    data(
-                        atoms=[
-                            a, ], orig_atoms=[
-                            a_orig, ], atoms_orig_idx=[
-                            a_orig_idx, ], type='positive', center=list(
-                            get_coord(
-                                self.mol_conf, a.GetIdx())), fgroup='tertamine'))
-            if self.is_functional_group(a, 'sulfonium'):
-                a_set.append(
-                    data(
-                        atoms=[
-                            a, ], orig_atoms=[
-                            a_orig, ], atoms_orig_idx=[
-                            a_orig_idx, ], type='positive', center=list(
-                            get_coord(
-                                self.mol_conf, a.GetIdx())), fgroup='sulfonium'))
-            if self.is_functional_group(a, 'phosphate'):
-                a_contributing = [a, ]
-                a_contributing_orig_idx = [a_orig_idx, ]
-                [a_contributing.append(neighbor)
-                 for neighbor in a.GetNeighbors()]
-                [a_contributing_orig_idx.append(neighbor.GetIdx())
-                 for neighbor in a_contributing]
-                orig_contributing = [idx for idx in a_contributing_orig_idx]
-                a_set.append(
-                    data(
-                        atoms=a_contributing,
-                        orig_atoms=orig_contributing,
-                        atoms_orig_idx=a_contributing_orig_idx,
-                        type='negative',
-                        center=list(
-                            get_coord(
-                                self.mol_conf,
-                                a.GetIdx())),
-                        fgroup='phosphate'))
-            if self.is_functional_group(a, 'sulfonicacid'):
-                a_contributing = [a, ]
-                a_contributing_orig_idx = [a_orig_idx, ]
-                [a_contributing.append(neighbor) for neighbor in a.GetNeighbors(
-                ) if neighbor.GetAtomicNum() == 8]
-                [a_contributing_orig_idx.append(
-                    neighbor.GetIdx()) for neighbor in a_contributing]
-                orig_contributing = a_contributing_orig_idx
-                a_set.append(
-                    data(
-                        atoms=a_contributing,
-                        orig_atoms=orig_contributing,
-                        atoms_orig_idx=a_contributing_orig_idx,
-                        type='negative',
-                        center=list(
-                            get_coord(
-                                self.mol_conf,
-                                a.GetIdx())),
-                        fgroup='sulfonicacid'))
-            elif self.is_functional_group(a, 'sulfate'):
-                a_contributing = [a, ]
-                a_contributing_orig_idx = [a_orig_idx, ]
-                [a_contributing_orig_idx.append(
-                    neighbor.GetIdx()) for neighbor in a_contributing]
-                [a_contributing.append(neighbor)
-                 for neighbor in a.GetNeighbors()]
-                orig_contributing = a_contributing_orig_idx
-                a_set.append(
-                    data(
-                        atoms=a_contributing,
-                        orig_atoms=orig_contributing,
-                        atoms_orig_idx=a_contributing_orig_idx,
-                        type='negative',
-                        center=get_coord(
-                            self.mol_conf,
-                            a.GetIdx()),
-                        fgroup='sulfate'))
-            if self.is_functional_group(a, 'carboxylate'):
-                a_contributing = [
-                    neighbor for neighbor in a.GetNeighbors() if neighbor.GetAtomicNum() == 8]
-                a_contributing_orig_idx = [
-                    neighbor.GetIdx() for neighbor in a_contributing]
-                orig_contributing = a_contributing_orig_idx
-                a_set.append(data(atoms=a_contributing,
-                                  orig_atoms=orig_contributing,
-                                  atoms_orig_idx=a_contributing_orig_idx,
-                                  type='negative',
-                                  center=centroid([get_coord(self.mol_conf,
-                                                             a.GetIdx()) for a in a_contributing]),
-                                  fgroup='carboxylate'))
-            elif self.is_functional_group(a, 'guanidine'):
-                a_contributing = [
-                    neighbor for neighbor in a.GetNeighbors() if neighbor.GetAtomicNum() == 7]
-                a_contributing_orig_idx = [
-                    neighbor.GetIdx() for neighbor in a_contributing]
-                orig_contributing = a_contributing_orig_idx
-                a_set.append(
-                    data(
-                        atoms=a_contributing,
-                        orig_atoms=orig_contributing,
-                        atoms_orig_idx=a_contributing_orig_idx,
-                        type='positive',
-                        center=get_coord(
-                            self.mol_conf,
-                            a.GetIdx()),
-                        fgroup='guanidine'))
-        return a_set
-
-    def is_functional_group(self, atom, group):
-        """Given a pybel atom, look up if it belongs to a function group"""
-        n_atoms = [a_neighbor.GetAtomicNum()
-                   for a_neighbor in atom.GetNeighbors()]
-
-        if group in [
-            'quartamine',
-                'tertamine'] and atom.GetAtomicNum() == 7:  # Nitrogen
-            # It's a nitrogen, so could be a protonated amine or quaternary
-            # ammonium
-            if '1' not in n_atoms and len(n_atoms) == 4:
-                # It's a quat. ammonium (N with 4 residues != H)
-                return True if group == 'quartamine' else False
-            elif atom.GetHybridization() == Chem.rdchem.HybridizationType.SP3 and len(n_atoms) >= 3:
-                # It's sp3-hybridized, so could pick up an hydrogen
-                return True if group == 'tertamine' else False
-            else:
-                return False
-
-        if group in ['sulfonium', 'sulfonicacid',
-                     'sulfate'] and atom.GetAtomicNum() == 16:  # Sulfur
-            if '1' not in n_atoms and len(
-                    n_atoms) == 3:  # It's a sulfonium (S with 3 residues != H)
-                return True if group == 'sulfonium' else False
-            elif n_atoms.count(8) == 3:  # It's a sulfonate or sulfonic acid
-                return True if group == 'sulfonicacid' else False
-            elif n_atoms.count(8) == 4:  # It's a sulfate
-                return True if group == 'sulfate' else False
-
-        if group == 'phosphate' and atom.GetAtomicNum() == 15:  # Phosphor
-            if set(n_atoms) == {8}:  # It's a phosphate
-                return True
-
-        if group in [
-            'carboxylate',
-                'guanidine'] and atom.GetAtomicNum() == 6:  # It's a carbon atom
-            if n_atoms.count(8) == 2 and n_atoms.count(
-                    6) == 1:  # It's a carboxylate group
-                return True if group == 'carboxylate' else False
-            elif n_atoms.count(7) == 3 and len(n_atoms) == 3:  # It's a guanidine group
-                nitro_partners = []
-                for nitro in atom.GetNeighbors():
-                    nitro_partners.append(
-                        len([b_neighbor for b_neighbor in nitro.GetNeighbors()]))
-                if min(
-                        nitro_partners) == 1:  # One nitrogen is only connected to the carbon, can pick up a H
-                    return True if group == 'guanidine' else False
-
-        if group == 'halocarbon' and atom.GetAtomicNum() in [
-                9, 17, 35, 53]:  # Halogen atoms
-            n_atoms = [
-                na for na in atom.GetNeighbors() if na.GetAtomicNum() == 6]
-            if len(n_atoms) == 1:  # Halocarbon
-                return True
-        else:
-            return False
-
-    def find_metal_binding(self):
-        """Looks for atoms that could possibly be involved in binding a metal ion.
-        This can be any water oxygen, as well as oxygen from carboxylate, phophoryl, phenolate, alcohol;
-        nitrogen from imidazole; sulfur from thiolate.
-        """
-        a_set = []
-        data = namedtuple(
-            'metal_binding',
-            'atom orig_atom atom_orig_idx type fgroup restype resnr reschain location coords')
-        for oxygen in self.water:
-            a_set.append(
-                data(
-                    atom=oxygen.oxy,
-                    atom_orig_idx=oxygen.oxy_orig_idx,
-                    type='O',
-                    fgroup='water',
-                    restype="HOH",
-                    resnr=oxygen.oxy.GetPDBResidueInfo().GetResidueNumber(),
-                    reschain="W",
-                    coords=oxygen.oxy_coords,
-                    location='water',
-                    orig_atom=oxygen.oxy_orig_idx))
-
-        for a in self.mol.GetAtoms():
-            a_orig_idx = a.GetIdx()
-            n_atoms = a.GetNeighbors()
-            # All atomic numbers of neighboring atoms
-            n_atoms_atomicnum = [n.GetAtomicNum() for n in a.GetNeighbors()]
-            if a.GetAtomicNum() == 8:  # Oxygen
-                if n_atoms_atomicnum.count('1') == 1 and len(
-                        n_atoms_atomicnum) == 2:  # Oxygen in alcohol (R-[O]-H)
-                    a_set.append(
-                        data(
-                            atom=a,
-                            atom_orig_idx=a_orig_idx,
-                            type='O',
-                            coords=get_atom_coords(a),
-                            fgroup='alcohol',
-                            restype="l",
-                            resnr=1,
-                            reschain="L",
-                            location='ligand',
-                            orig_atom=a_orig_idx))
-                if True in [
-                        n.GetIsAromatic() for n in n_atoms] and not a.GetIsAromatic():  # Phenolate oxygen
-                    a_set.append(
-                        data(
-                            atom=a,
-                            atom_orig_idx=a_orig_idx,
-                            type='O',
-                            coords=get_atom_coords(a),
-                            fgroup='phenolate',
-                            restype="l",
-                            resnr=1,
-                            reschain="L",
-                            location='ligand',
-                            orig_atom=a_orig_idx))
-            if a.GetAtomicNum() == 6:  # It's a carbon atom
-                if n_atoms_atomicnum.count(8) == 2 and n_atoms_atomicnum.count(
-                        6) == 1:  # It's a carboxylate group
-                    for neighbor in [
-                            n for n in n_atoms if n.GetAtomicNum() == 8]:
-                        neighbor_orig_idx = neighbor.GetIdx()
-                        a_set.append(
-                            data(
-                                atom=neighbor,
-                                atom_orig_idx=neighbor_orig_idx,
-                                type='O',
-                                fgroup='carboxylate',
-                                restype="l",
-                                resnr=1,
-                                reschain="L",
-                                location='ligand',
-                                orig_atom=a_orig_idx,
-                                coords=get_atom_coords(neighbor)))
-            if a.GetAtomicNum() == 15:  # It's a phosphor atom
-                if n_atoms_atomicnum.count(8) >= 3:  # It's a phosphoryl
-                    for neighbor in [
-                            n for n in n_atoms if n.GetAtomicNum() == 8]:
-                        neighbor_orig_idx = neighbor.GetIdx()
-                        a_set.append(
-                            data(
-                                atom=neighbor,
-                                atom_orig_idx=neighbor_orig_idx,
-                                type='O',
-                                fgroup='phosphoryl',
-                                restype="l",
-                                resnr=1,
-                                reschain="L",
-                                location='ligand',
-                                orig_atom=a_orig_idx,
-                                coords=get_atom_coords(neighbor)))
-                if n_atoms_atomicnum.count(
-                        8) == 2:  # It's another phosphor-containing group #@todo (correct name?)
-                    for neighbor in [
-                            n for n in n_atoms if n.GetAtomicNum() == 8]:
-                        neighbor_orig_idx = neighbor.GetIdx()
-                        a_set.append(
-                            data(
-                                atom=neighbor,
-                                atom_orig_idx=neighbor_orig_idx,
-                                type='O',
-                                fgroup='phosphor.other',
-                                restype="l",
-                                resnr=1,
-                                reschain="L",
-                                location='ligand',
-                                orig_atom=a_orig_idx,
-                                coords=get_atom_coords(neighbor)))
-            if a.GetAtomicNum() == 7:  # It's a nitrogen atom
-                if n_atoms_atomicnum.count(
-                        6) == 2:  # It's imidazole/pyrrole or similar
-                    a_set.append(
-                        data(
-                            atom=a,
-                            atom_orig_idx=a_orig_idx,
-                            type='N',
-                            coords=get_atom_coords(a),
-                            fgroup='imidazole/pyrrole',
-                            restype="l",
-                            resnr=1,
-                            reschain="L",
-                            location='ligand',
-                            orig_atom=a_orig_idx))
-            if a.GetAtomicNum() == 16:  # It's a sulfur atom
-                if True in [n.GetIsAromatic()
-                            for n in n_atoms] and not a.GetIsAromatic():  # Thiolate
-                    a_set.append(
-                        data(
-                            atom=a,
-                            atom_orig_idx=a_orig_idx,
-                            type='S',
-                            coords=get_atom_coords(a),
-                            fgroup='thiolate',
-                            restype="l",
-                            resnr=1,
-                            reschain="L",
-                            location='ligand',
-                            orig_atom=a_orig_idx))
-                if set(n_atoms_atomicnum) == {
-                        26}:  # Sulfur in Iron sulfur cluster
-                    a_set.append(
-                        data(
-                            atom=a,
-                            atom_orig_idx=a_orig_idx,
-                            type='S',
-                            coords=get_atom_coords(a),
-                            fgroup='iron-sulfur.cluster',
-                            restype="l",
-                            resnr=1,
-                            reschain="L",
-                            location='ligand',
-                            orig_atom=a_orig_idx))
-        return a_set
-
-
-class Protein(Mol):
+### Need to get:
+###     atomic indices
+###     atom names
+###     residue indices
+###     residue names
+###     atom coords
+###     atomic radii
+###     neighbors (for hbond?)
+###     partial charges
+###     
+class Protein:
     def __init__(self, mol):
-        super(Protein, self).__init__(mol)
 
-        self.atomic_symbol = np.array([atom.GetSymbol() for atom in self.all_atoms])
-        self.atomic_radii = self.calculate_atomic_radii()
-        self.partial_charges = self.calculate_partial_charges(mol)
+        self.mol = mol
+        self.all_atoms = mol.GetAtoms()
 
-        self.atoms_coords = self.getAll_atoms_coord()
+        # Load attributes into numpy arrays
+        tm = time.time()
+        self.natom = len(self.all_atoms)
+        self.vectorize_features()
+        print(time.time() - tm)
+
         self.rings = self.find_rings()
-        self.hydroph_atoms = self.hydrophobic_atoms()
-        self.hbond_acc_atoms = self.find_hba()
-        self.hbond_don_atom_pairs = self.find_hbd()
-        self.residues = residue_order(mol)
+        print(time.time() - tm)
+#       self.hydrophobic_idx = self.hydrophobic_atoms()
+#       print(time.time() - tm)
+        self.hbond_acc_idx = self.find_hba()
+        print(time.time() - tm)
+        self.hbond_don_idx = self.find_hbd()
+        print(time.time() - tm)
+#       self.residues = residue_order(mol)
+#       print(time.time() - tm)
 
         self.charged = self.find_charged()
-        self.halogenbond_acc = self.find_hal()
-        self.metal_binding = self.find_metal_binding()
+        print(time.time() - tm)
+#       self.halogenbond_acc = self.find_hal()
+#       print(time.time() - tm)
+#       self.metal_binding = self.find_metal_binding()
+#       print(time.time() - tm)
 
-        self.atom_prop_dict = config.atom_prop_dict
+#       self.atom_prop_dict = config.atom_prop_dict
+#       print(time.time() - tm)
 
         # ADDED dummy variables so that PLInteraction will work with two Protein objects
-        self.halogenbond_don = []
-        self.water = []
+#       self.halogenbond_don = []
+#       self.water = []
 
 
-        self.metals = []
-        data = namedtuple('metal', 'm orig_m m_orig_idx m_coords')
-        atomic_symbols = np.array([atom.GetSymbol().upper() for atom in self.all_atoms])
-        metal_atoms_mask = np.isin(atomic_symbols, config.METAL_IONS)
+#       self.metals = []
+#       data = namedtuple('metal', 'm orig_m m_orig_idx m_coords')
+#       atomic_symbols = np.array([atom.GetSymbol().upper() for atom in self.all_atoms])
+#       metal_atoms_mask = np.isin(atomic_symbols, config.METAL_IONS)
 
-        for a in np.array(self.all_atoms)[metal_atoms_mask]:
-            m_orig_idx = a.GetIdx()
-            orig_m = m_orig_idx
-            self.metals.append(
-                data(
-                    m=a,
-                    m_orig_idx=m_orig_idx,
-                    orig_m=orig_m,
-                    m_coords=self.atoms_coords[m_orig_idx]))
+#       for a in np.array(self.all_atoms)[metal_atoms_mask]:
+#           m_orig_idx = a.GetIdx()
+#           orig_m = m_orig_idx
+#           self.metals.append(
+#               data(
+#                   m=a,
+#                   m_orig_idx=m_orig_idx,
+#                   orig_m=orig_m,
+#                   m_coords=self.atoms_coords[m_orig_idx]))
+
+
     def get_atomic_radius(self, atom):
         radius = {"N": 1.8, "O": 1.7, "S": 2.0, "P": 2.1, "F": 1.5, "Cl": 1.8,
           "Br": 2.0, "I": 2.2, "C": 1.9, "H": 0.0, "Zn": 0.5, "B": 1.8,
           "Si": 1.8, "As": 1.8, "Se": 1.8}
         atomic_symbol = atom.GetSymbol()
         return radius.get(atomic_symbol, np.nan) 
+
+
+
+    def vectorize_features(self):
+        # Atom vectors
+        self.atom_idx = np.arange(self.natom)
+        self.atom_name = np.zeros(self.natom, str)
+        self.atom_radii = np.zeros(self.natom, float)
+        self.atom_charge = np.zeros(self.natom, float)
+        self.atom_coord = np.zeros((self.natom, 3), float)
+
+        # Residue vectors (for each atom)
+        self.residue_idx = np.zeros(self.natom, int)
+        self.residue_name = np.zeros(self.natom, object)
+        self.is_ca = np.zeros(self.natom, bool)
+
+        # Load alternative format (for partial charges and easy coord access)
+        mol = pybel.readstring("pdb", Chem.MolToPDBBlock(self.mol))
+
+        for i, (atom, alt_atom) in enumerate(zip(self.all_atoms, mol.atoms)):
+            self.atom_name[i] = atom.GetSymbol()
+            self.atom_radii[i] = self.get_atomic_radius(atom)
+            self.atom_charge[i] = alt_atom.partialcharge
+            self.atom_coord[i] = alt_atom.coords
+
+            res_info = atom.GetPDBResidueInfo()
+            self.residue_idx[i] = res_info.GetResidueNumber()
+            self.residue_name[i] = res_info.GetResidueName()
+            self.is_ca[i] = 'CA' in res_info.GetName()
+
     
     def calculate_atomic_radii(self):
         atomic_radii = np.zeros(len(self.all_atoms))
@@ -726,8 +214,12 @@ class Protein(Mol):
         return atomic_radii
     
     def calculate_partial_charges(self, mol_prot):
+        tm = time.time()
+        print("Inside partial charges")
         mol = pybel.readstring("pdb", Chem.MolToPDBBlock(mol_prot))
-        charges = [mol.atoms[atom.GetIdx()].partialcharge for atom in self.all_atoms]
+        print(time.time() - tm)
+        charges = [atom.partialcharge for atom in mol.atoms]
+        print(time.time() - tm)
         return np.array(charges)
                                     
     def getAll_atoms_coord(self):
@@ -741,461 +233,406 @@ class Protein(Mol):
 
     def hydrophobic_atoms(self):
         """Select all carbon atoms which have only carbons and/or hydrogens as direct neighbors."""
-        atom_set = []
-        data = namedtuple('hydrophobic', 'atom orig_atom orig_idx coords')
+        carbon_idx = np.where(self.atom_name == 6)[0]
+        hphob_idx = np.array([i for i in carbon_idx if {natom.GetAtomicNum() for natom in self.all_atoms[i].GetNeighbors()} <= {1, 6}])
 
-        atomic_nums = np.array([atom.GetAtomicNum() for atom in self.all_atoms])
-        is_atomic_num_6 = atomic_nums == 6
-        neighbors_1_or_6 = np.array([{natom.GetAtomicNum() for natom in atom.GetNeighbors()} <= {1, 6} for atom in self.all_atoms])
-        filter_mask = is_atomic_num_6 & neighbors_1_or_6
-        atm = np.array(self.all_atoms)[filter_mask]
+        # Just return the indices
+        return hphob_idx
+#       filter_mask = is_atomic_num_6 & neighbors_1_or_6
+#       atm = np.array(self.all_atoms)[filter_mask]
 
-        for atom in atm:
-            orig_idx = atom.GetIdx()
-            orig_atom = orig_idx
-            atom_set.append(
-                data(
-                    atom=atom,
-                    orig_atom=orig_atom,
-                    orig_idx=orig_idx,
-                    coords=self.atoms_coords[orig_idx]))
-        return atom_set
+#       for atom in atm:
+#           orig_idx = atom.GetIdx()
+#           orig_atom = orig_idx
+#           atom_set.append(
+#               data(
+#                   atom=atom,
+#                   orig_atom=orig_atom,
+#                   orig_idx=orig_idx,
+#                   coords=self.atoms_coords[orig_idx]))
+#       return atom_set
 
     def find_hba(self):
-        data = namedtuple(
-            'hbondacceptor',
-            'a a_orig_atom a_orig_idx type coords')
-        a_set = []
-        for atom in self.all_atoms:
-            if is_acceptor(atom):
-                a_orig_idx = atom.GetIdx()
-                a_orig_atom = atom
-                a_set.append(
-                    data(
-                        a=atom,
-                        a_orig_atom=a_orig_atom,
-                        a_orig_idx=a_orig_idx,
-                        type='regular',
-                        coords=self.atoms_coords[a_orig_idx]))
-        a_set = sorted(a_set, key=lambda x: x.a_orig_idx)
-        return a_set
+        # Find indices for atoms that are not H or C
+        potential_acceptor_idx = np.where(~np.in1d(self.atom_name, ['H', 'C']))[0]
+        hba_idx = np.array([i for i in potential_acceptor_idx if is_acceptor(self.atom_name[i], self.residue_name[i])], int)
+        return hba_idx
+
 
     def find_hbd(self):
         donor_pairs = []
+        # Find non-carbon donor pairs
+        potential_donor_idx = np.where(~np.in1d(self.atom_name, ['H', 'C']))[0]
+        for i in potential_donor_idx:
+            i = int(i)
+            if is_donor(self.atom_name[i], self.residue_name[i]):
+                neighbor_H = [a for a in self.all_atoms[i].GetNeighbors() if a.GetAtomicNum() == 1]
+                for atom in neighbor_H:
+                    donor_pairs.append([i, atom.GetIdx()])
+
+        # Find carbon donor pairs
+        for i in np.where(self.atom_name == 'C')[0]:
+            i = int(i)
+            neighbor_H = [a for a in self.all_atoms[i].GetNeighbors() if a.GetAtomicNum() == 1]
+            for atom in neighbor_H:
+                donor_pairs.append([i, atom.GetIdx()])
+        return np.array(donor_pairs, int)
+
+
+    def find_rings(self):
+        """Find rings and return only aromatic.
+        Rings have to be sufficiently planar OR be detected by OpenBabel as aromatic."""
         data = namedtuple(
-            'hbonddonor',
-            'd d_orig_atom d_orig_idx h type d_coords h_coords')
-        for donor in [a for a in self.all_atoms if is_donor(a)]:
-            in_ring = False
-            if not in_ring:
-                for adj_atom in [
-                        a for a in donor.GetNeighbors() if a.GetAtomicNum() == 1]:
-                    d_orig_idx = donor.GetIdx()
-                    d_orig_atom = donor
-                    d_coords = self.atoms_coords[d_orig_idx]
-                    h_coords = self.atoms_coords[adj_atom.GetIdx()]
-                    donor_pairs.append(
+            'aromatic_ring',
+            'atoms orig_atoms atoms_orig_idx normal obj center type')
+        rings = []
+        aromatic_amino = ['TYR', 'TRP', 'HIS', 'PHE']
+        ring_info = self.mol.GetRingInfo()
+        rings_atom_idx = ring_info.AtomRings()
+        for ring in rings_atom_idx:
+            if 4 < len(ring) <= 6:
+                r_atoms = [self.mol.GetAtomWithIdx(idx) for idx in ring]
+                r_atoms = sorted(r_atoms, key=lambda x: x.GetIdx())
+                atom_pos = self.atom_coord[list(ring)]
+
+                res = list(set([whichrestype(a) for a in r_atoms]))
+                if res[0] == "UNL":
+                    ligand_orig_idx = ring
+                    sort_order = np.argsort(np.array(ligand_orig_idx))
+                    r_atoms = [r_atoms[i] for i in sort_order]
+                if is_aromatic(r_atoms) or res[0] in aromatic_amino or ring_is_planar(
+                        atom_pos, ring, r_atoms):
+                    ring_type = '%s-membered' % len(ring)
+                    ring_atms = atom_pos[[0,2,4]]
+                    ringv1 = vector(ring_atms[0], ring_atms[1])
+                    ringv2 = vector(ring_atms[2], ring_atms[0])
+
+                    atoms_orig_idx = [r_atom.GetIdx() for r_atom in r_atoms]
+                    orig_atoms = r_atoms
+                    rings.append(
                         data(
-                            d=donor,
-                            d_orig_atom=d_orig_atom,
-                            d_orig_idx=d_orig_idx,
-                            h=adj_atom,
-                            type='regular',
-                            d_coords=d_coords,
-                            h_coords=h_coords))
+                            atoms=r_atoms,
+                            orig_atoms=orig_atoms,
+                            atoms_orig_idx=atoms_orig_idx,
+                            normal=normalize_vector(
+                                np.cross(
+                                    ringv1,
+                                    ringv2)),
+                            obj=ring,
+                            center=np.mean(atom_pos, axis=0),
+                            type=ring_type))
 
-        for carbon in self.hydroph_atoms:
-            for adj_atom in [
-                    a for a in carbon.atom.GetNeighbors() if a.GetAtomicNum() == 1]:
-                d_orig_idx = carbon.atom.GetIdx()
-                d_orig_atom = carbon.atom
-                d_coords = self.atoms_coords[d_orig_idx]
-                h_coords = self.atoms_coords[adj_atom.GetIdx()]
-                donor_pairs.append(
-                    data(
-                        d=carbon,
-                        d_orig_atom=d_orig_atom,
-                        d_coords=d_coords,
-                        h_coords=h_coords,
-                        d_orig_idx=d_orig_idx,
-                        h=adj_atom,
-                        type='weak'))
-        donor_pairs = sorted(
-            donor_pairs, key=lambda x: (
-                x.d_orig_idx, x.h.GetIdx()))
-        return donor_pairs
+        return rings
 
-    def find_hal(self):
-        """Look for halogen bond acceptors (Y-{O|P|N|S}, with Y=C,P,S)"""
-        data = namedtuple(
-            'hal_acceptor',
-            'o o_orig_idx y y_orig_idx o_coords y_coords')
-        a_set = []
-        # All oxygens, nitrogen, sulfurs with neighboring carbon, phosphor,
-        # nitrogen or sulfur
-        for a in [at for at in self.all_atoms if at.GetAtomicNum() in [
-                8, 7, 16]]:
-            n_atoms = [na for na in a.GetNeighbors() if na.GetAtomicNum() in [
-                6, 7, 15, 16]]
-            if len(n_atoms) == 1:  # Proximal atom
-                o_orig_idx = a.GetIdx()
-                y_orig_idx = n_atoms[0].GetIdx()
-                o_coords = self.atoms_coords[o_orig_idx]
-                y_coords = self.atoms_coords[y_orig_idx]
-                a_set.append(data(o=a, o_orig_idx=o_orig_idx, y=n_atoms[0],
-                                  y_orig_idx=y_orig_idx, o_coords=o_coords,
-                                  y_coords=y_coords))
-        return a_set
 
+#   def find_hal(self):
+#       """Look for halogen bond acceptors (Y-{O|P|N|S}, with Y=C,P,S)"""
+#       data = namedtuple(
+#           'hal_acceptor',
+#           'o o_orig_idx y y_orig_idx o_coords y_coords')
+#       hal_pair = []
+#       # All oxygens, nitrogen, sulfurs with neighboring carbon, phosphor,
+#       # nitrogen or sulfur
+#       is_N_O_S = np.in1d(self.atom_name, ['N', 'O', 'S'])
+#       for i in np.where(is_N_O_S)[0]:
+#           i = int(i)
+#           neighbors = [a for a in self.all_atoms[i].GetNeighbors() if a.GetAtomicNum() in [6, 7, 15, 16]]
+#           if len(neighbors) == 1:  # Proximal atom
+#               hal_pair.append([i, neighbors[0].GetIdx()])
+#       return np.array(hal_pair)
+
+
+    ### For some reason they originally excluded backbone atoms...
+    ### Can't think of any negative consequence of keeping them in,
+    ### other than they might rarely be involved in signficant
+    ### interactions...?
     def find_charged(self):
         """Looks for positive charges in arginine, histidine or lysine, for negative in aspartic and glutamic acid."""
-        data = namedtuple(
-            'pcharge',
-            'atoms atoms_orig_idx type center restype resnr reschain')
-        a_set = []
-        # Iterate through all residue, exclude those in chains defined as
-        # peptides
+        is_charged = np.in1d(self.residue_name, ['ARG', 'HIS', 'LYS', 'GLU', 'ASP'])
+        is_N_O = np.in1d(self.atom_name, ['N', 'O'])
+        charged_idx = np.where(is_charged & is_N_O)[0]
+        return charged_idx
 
-        for res in self.residues:
-            a_contributing = []
-            a_contributing_orig_idx = []
-            if res.residue_name in ("ARG", "HIS", "LYS"):
-                for a in res.residue_atoms:
-                    if a.GetSymbol() == "N" and a.GetPDBResidueInfo().GetName().strip(" ") != "N":
-                        a_contributing.append(a)
-                        a_contributing_orig_idx.append(a.GetIdx())
-                if not len(a_contributing) == 0:
-                    a_set.append(
-                        data(
-                            atoms=a_contributing,
-                            atoms_orig_idx=a_contributing_orig_idx,
-                            type='positive',
-                            center=centroid(
-                                [
-                                    self.atoms_coords[ac.GetIdx()] for ac in a_contributing]),
-                            restype=res.residue_name,
-                            resnr=res.residue_number,
-                            reschain=res.residue_chain))
-            if res.residue_name in ("GLU", "ASP"):
-                for a in res.residue_atoms:
-                    if a.GetSymbol() == "O" and a.GetPDBResidueInfo().GetName().strip(" ") != "O":
-                        a_contributing.append(a)
-                        a_contributing_orig_idx.append(a.GetIdx())
-                if not len(a_contributing) == 0:
-                    a_set.append(
-                        data(
-                            atoms=a_contributing,
-                            atoms_orig_idx=a_contributing_orig_idx,
-                            type='negative',
-                            center=centroid(
-                                [
-                                    self.atoms_coords[ac.GetIdx()] for ac in a_contributing]),
-                            restype=res.residue_name,
-                            resnr=res.residue_number,
-                            reschain=res.residue_chain))
-        return a_set
 
-    def find_metal_binding(self):
-        """Looks for atoms that could possibly be involved in chelating a metal ion.
-        This can be any main chain oxygen atom or oxygen, nitrogen and sulfur from specific amino acids"""
-        data = namedtuple(
-            'metal_binding',
-            'atom atom_orig_idx type restype resnr reschain location coords')
-        a_set = []
-        for res in self.residues:
-            restype, resnr = res.residue_name, res.residue_number
-            reschain = 'P'
-            if restype in ("ASP", "GLU", "SER", "THR", "TYR"):
-                for a in res.residue_atoms:
-                    if a.GetSymbol() == "O" and a.GetPDBResidueInfo().GetName().strip(" ") != "O":
-                        atom_orig_idx = a.GetIdx()
-                        a_set.append(
-                            data(
-                                atom=a,
-                                atom_orig_idx=atom_orig_idx,
-                                type='O',
-                                restype=restype,
-                                resnr=resnr,
-                                reschain=reschain,
-                                coords=self.atoms_coords[atom_orig_idx],
-                                location='protein.sidechain'))
-            if restype == 'HIS':  # Look for nitrogen here
-                for a in res.residue_atoms:
-                    if a.GetSymbol() == "N" and a.GetPDBResidueInfo().GetName().strip(" ") != "N":
-                        atom_orig_idx = a.GetIdx()
-                        a_set.append(
-                            data(
-                                atom=a,
-                                atom_orig_idx=atom_orig_idx,
-                                type='N',
-                                restype=restype,
-                                resnr=resnr,
-                                reschain=reschain,
-                                coords=self.atoms_coords[atom_orig_idx],
-                                location='protein.sidechain'))
-            if restype == 'CYS':  # Look for sulfur here
-                for a in res.residue_atoms:
-                    if a.GetSymbol() == "S":
-                        atom_orig_idx = a.GetIdx()
-                        a_set.append(
-                            data(
-                                atom=a,
-                                atom_orig_idx=atom_orig_idx,
-                                type='S',
-                                restype=restype,
-                                resnr=resnr,
-                                reschain=reschain,
-                                coords=self.atoms_coords[atom_orig_idx],
-                                location='protein.sidechain'))
+    ### Ask a chemist or other person about this!
+    ### It could be important later...
+#   def find_metal_binding(self):
+#       """Looks for atoms that could possibly be involved in chelating a metal ion.
+#       This can be any main chain oxygen atom or oxygen, nitrogen and sulfur from specific amino acids"""
+#       data = namedtuple(
+#           'metal_binding',
+#           'atom atom_orig_idx type restype resnr reschain location coords')
+#       a_set = []
+#       for res in self.residues:
+#           restype, resnr = res.residue_name, res.residue_number
+#           reschain = 'P'
+#           if restype in ("ASP", "GLU", "SER", "THR", "TYR"):
+#               for a in res.residue_atoms:
+#                   if a.GetSymbol() == "O" and a.GetPDBResidueInfo().GetName().strip(" ") != "O":
+#                       atom_orig_idx = a.GetIdx()
+#                       a_set.append(
+#                           data(
+#                               atom=a,
+#                               atom_orig_idx=atom_orig_idx,
+#                               type='O',
+#                               restype=restype,
+#                               resnr=resnr,
+#                               reschain=reschain,
+#                               coords=self.atoms_coords[atom_orig_idx],
+#                               location='protein.sidechain'))
+#           if restype == 'HIS':  # Look for nitrogen here
+#               for a in res.residue_atoms:
+#                   if a.GetSymbol() == "N" and a.GetPDBResidueInfo().GetName().strip(" ") != "N":
+#                       atom_orig_idx = a.GetIdx()
+#                       a_set.append(
+#                           data(
+#                               atom=a,
+#                               atom_orig_idx=atom_orig_idx,
+#                               type='N',
+#                               restype=restype,
+#                               resnr=resnr,
+#                               reschain=reschain,
+#                               coords=self.atoms_coords[atom_orig_idx],
+#                               location='protein.sidechain'))
+#           if restype == 'CYS':  # Look for sulfur here
+#               for a in res.residue_atoms:
+#                   if a.GetSymbol() == "S":
+#                       atom_orig_idx = a.GetIdx()
+#                       a_set.append(
+#                           data(
+#                               atom=a,
+#                               atom_orig_idx=atom_orig_idx,
+#                               type='S',
+#                               restype=restype,
+#                               resnr=resnr,
+#                               reschain=reschain,
+#                               coords=self.atoms_coords[atom_orig_idx],
+#                               location='protein.sidechain'))
 
-            for a in res.residue_atoms:  # All main chain oxygens
-                if a.GetSymbol() == "O" and a.GetPDBResidueInfo().GetName().strip(" ") == "O":
-                    atom_orig_idx = a.GetIdx()
-                    a_set.append(
-                        data(
-                            atom=a,
-                            atom_orig_idx=atom_orig_idx,
-                            type='O',
-                            restype=res.residue_name,
-                            resnr=res.residue_number,
-                            reschain=reschain,
-                            coords=self.atoms_coords[atom_orig_idx],
-                            location='protein.mainchain'))
-        return a_set
+#           for a in res.residue_atoms:  # All main chain oxygens
+#               if a.GetSymbol() == "O" and a.GetPDBResidueInfo().GetName().strip(" ") == "O":
+#                   atom_orig_idx = a.GetIdx()
+#                   a_set.append(
+#                       data(
+#                           atom=a,
+#                           atom_orig_idx=atom_orig_idx,
+#                           type='O',
+#                           restype=res.residue_name,
+#                           resnr=res.residue_number,
+#                           reschain=reschain,
+#                           coords=self.atoms_coords[atom_orig_idx],
+#                           location='protein.mainchain'))
+#       return a_set
 
 class PLInteraction:
-    """Class to store a ligand, a protein and their interactions."""
+    """Class to store a protein and its self interactions."""
 
-    def __init__(self, lig_obj, bs_obj, pdbid):
-        """Detect all interactions when initializing"""
-        self.ligand = lig_obj
-        self.pdbid = pdbid
-        self.protein = bs_obj
+    def __init__(self, prot):
+        """Detect all self interactions when initializing"""
+        self.protein = prot
+
+        self.dist_mat = self.calc_dist_mat()
+#       self.vectors = self.calc_vectors()
+#       self.atomic_radii_sum = self.calc_atomic_radii_sum()
+        self.is_intra_residue = self.calc_is_intra_residue()
 
         # #@todo Refactor code to combine different directionality
 
-        prot_pchar, prot_nchar = self.protein.get_pos_charged(), self.protein.get_neg_charged()
-        self.saltbridge_lneg = saltbridge(prot_pchar, prot_nchar, True)
-        self.saltbridge_pneg = saltbridge(prot_pchar, prot_nchar, False)
+        self.saltbridge_idx = self.get_salt_bridges()
+        self.hbond_idx = self.get_hbonds()
+        self.vdw_idx = self.get_vdw()
 
-        prot_hba, prot_hbd = self.protein.get_hba(), self.protein.get_hbd()
-        self.all_hbonds_ldon = hbonds(prot_hba, prot_hbd, False, 'strong')
-        self.all_hbonds_pdon = hbonds(prot_hba, prot_hbd, True, 'strong')
+        # Ignore 'hydrophobic interactions' for now,
+        # since they will be duplicated too many times 
+        # in other interactions
+#       self.hphob_idx = self.hydrophobic_interactions()
 
-        self.hbonds_ldon = self.refine_hbonds_ldon(
-            self.all_hbonds_ldon, self.saltbridge_lneg, self.saltbridge_pneg)
-        self.hbonds_pdon = self.refine_hbonds_pdon(
-            self.all_hbonds_pdon, self.saltbridge_lneg, self.saltbridge_pneg)
-        
+        ### Probably need something like this to reduce the contribution
+        ### of hydrophobic contacts
+#       self.hydrophobic_contacts = self.refine_hydrophobic(
+#           self.all_hydrophobic_contacts, self.pistacking)
+
         prot_rings = self.protein.rings
         self.pistacking = pistacking(prot_rings, prot_rings)
 
-        self.all_pi_cation_laro = pication(prot_rings, prot_pchar, True)
-        self.pication_paro = pication(prot_rings, prot_pchar, False)
+#       self.pi_cation_laro = pication(prot_rings, prot_pchar)
+#       self.all_pi_cation_laro = pication(prot_rings, prot_pchar, True)
+#       self.pication_paro = pication(prot_rings, prot_pchar, False)
 
-        self.pication_laro = self.refine_pi_cation_laro(
-            self.all_pi_cation_laro, self.pistacking)
+#       self.pication_laro = self.refine_pi_cation_laro(
+#           self.all_pi_cation_laro, self.pistacking)
 
-        self.all_hydrophobic_contacts = self.hydrophobic_interactions(self.protein.get_hydrophobic_atoms())
-        self.hydrophobic_contacts = self.refine_hydrophobic(
-            self.all_hydrophobic_contacts, self.pistacking)
-        self.halogen_bonds = halogen(
-            self.protein.halogenbond_acc,
-            self.ligand.halogenbond_don)
+#       self.halogen_bonds = halogen(
+#           self.protein.halogenbond_acc,
+#           self.ligand.halogenbond_don)
         
-        prot_hba, prot_hbd = self.protein.get_hba(), self.protein.get_hbd()
-        self.all_water_bridges = water_bridges(prot_hba, prot_hba, prot_hbd, prot_hbd, self.ligand.water)
+#       prot_hba, prot_hbd = self.protein.get_hba(), self.protein.get_hbd()
+#       self.all_water_bridges = water_bridges(prot_hba, prot_hba, prot_hbd, prot_hbd, self.ligand.water)
 
-        self.water_bridges = self.refine_water_bridges(
-            self.all_water_bridges, self.hbonds_ldon, self.hbonds_pdon)
+#       self.water_bridges = self.refine_water_bridges(
+#           self.all_water_bridges, self.hbonds_ldon, self.hbonds_pdon)
 
-        self.metal_complexes = metal_complexation(
-            self.protein.metals,
-            self.ligand.metal_binding,
-            self.protein.metal_binding)
+#       self.metal_complexes = metal_complexation(
+#           self.protein.metals,
+#           self.ligand.metal_binding,
+#           self.protein.metal_binding)
 
-        self.all_itypes = self.saltbridge_lneg + \
-            self.saltbridge_pneg + self.hbonds_pdon
-        self.all_itypes = self.all_itypes + self.hbonds_ldon + \
-            self.pistacking + self.pication_laro + self.pication_paro
-        self.all_itypes = self.all_itypes + self.hydrophobic_contacts + \
-            self.halogen_bonds + self.water_bridges
-        self.all_itypes = self.all_itypes + self.metal_complexes
+#       self.all_itypes = self.saltbridge_lneg + \
+#           self.saltbridge_pneg + self.hbonds_pdon
+#       self.all_itypes = self.all_itypes + self.hbonds_ldon + \
+#           self.pistacking + self.pication_laro + self.pication_paro
+#       self.all_itypes = self.all_itypes + self.hydrophobic_contacts + \
+#           self.halogen_bonds + self.water_bridges
+#       self.all_itypes = self.all_itypes + self.metal_complexes
 
-        self.no_interactions = all(len(i) == 0 for i in self.all_itypes)
-        self.unpaired_hba, self.unpaired_hbd, self.unpaired_hal = self.find_unpaired_ligand()
-        self.unpaired_hba_orig_idx = [atom.GetIdx()
-                                      for atom in self.unpaired_hba]
-        self.unpaired_hbd_orig_idx = [atom.GetIdx()
-                                      for atom in self.unpaired_hbd]
-        self.unpaired_hal_orig_idx = [atom.GetIdx()
-                                      for atom in self.unpaired_hal]
-        self.num_unpaired_hba, self.num_unpaired_hbd = len(
-            self.unpaired_hba), len(self.unpaired_hbd)
-        self.num_unpaired_hal = len(self.unpaired_hal)
+#       self.no_interactions = all(len(i) == 0 for i in self.all_itypes)
+#       self.unpaired_hba, self.unpaired_hbd, self.unpaired_hal = self.find_unpaired_ligand()
+#       self.unpaired_hba_orig_idx = [atom.GetIdx()
+#                                     for atom in self.unpaired_hba]
+#       self.unpaired_hbd_orig_idx = [atom.GetIdx()
+#                                     for atom in self.unpaired_hbd]
+#       self.unpaired_hal_orig_idx = [atom.GetIdx()
+#                                     for atom in self.unpaired_hal]
+#       self.num_unpaired_hba, self.num_unpaired_hbd = len(
+#           self.unpaired_hba), len(self.unpaired_hbd)
+#       self.num_unpaired_hal = len(self.unpaired_hal)
 
-        self.dist_mat = self.calc_dist_mat(lig_obj, bs_obj)
-        self.atomic_radii_sum = self.calc_atomic_radii_sum(lig_obj, bs_obj)
-
-        self.hphob_idx = self.hphob_calcInd(lig_obj)
-        self.hbond_idx = self.hbond_calcInd()
-        self.vdw_idx = self.vdw_calcInd(lig_obj, bs_obj)
+#       self.hphob_idx = self.hphob_calcInd(lig_obj)
+#       self.hbond_idx = self.hbond_calcInd()
+#       self.vdw_idx = self.vdw_calcInd(lig_obj, bs_obj)
 
         # Exclude empty chains (coming from ligand as a target, from metal
         # complexes)
-        self.interacting_chains = sorted(list(set([i.reschain for i in self.all_itypes
-                                                   if i.reschain not in [' ', None]])))
+#       self.interacting_chains = sorted(list(set([i.reschain for i in self.all_itypes
+#                                                  if i.reschain not in [' ', None]])))
 
         # Get all interacting residues, excluding ligand and water molecules
-        self.interacting_res = list(set([''.join([str(i.resnr), str(
-            i.reschain)]) for i in self.all_itypes if i.restype not in ['LIG', 'HOH']]))
-        if len(self.interacting_res) != 0:
-            interactions_list = []
-            num_saltbridges = len(self.saltbridge_lneg + self.saltbridge_pneg)
-            num_hbonds = len(self.hbonds_ldon + self.hbonds_pdon)
-            num_pication = len(self.pication_laro + self.pication_paro)
-            num_pistack = len(self.pistacking)
-            num_halogen = len(self.halogen_bonds)
-            num_waterbridges = len(self.water_bridges)
-            if num_saltbridges != 0:
-                interactions_list.append('%i salt bridge(s)' % num_saltbridges)
-            if num_hbonds != 0:
-                interactions_list.append('%i hydrogen bond(s)' % num_hbonds)
-            if num_pication != 0:
-                interactions_list.append(
-                    '%i pi-cation interaction(s)' %
-                    num_pication)
-            if num_pistack != 0:
-                interactions_list.append('%i pi-stacking(s)' % num_pistack)
-            if num_halogen != 0:
-                interactions_list.append('%i halogen bond(s)' % num_halogen)
-            if num_waterbridges != 0:
-                interactions_list.append(
-                    '%i water bridge(s)' %
-                    num_waterbridges)
-            if not len(interactions_list) == 0:
-                # raise RuntimeWarning(f'complex uses {interactions_list}')
-                #print(f'complex uses {interactions_list}')
-                pass
-        else:
-            # raise RuntimeWarning('no interactions for this ligand')
-            print('no interactions for this ligand')
+#       self.interacting_res = list(set([''.join([str(i.resnr), str(
+#           i.reschain)]) for i in self.all_itypes if i.restype not in ['LIG', 'HOH']]))
+#       if len(self.interacting_res) != 0:
+#           interactions_list = []
+#           num_saltbridges = len(self.saltbridge_lneg + self.saltbridge_pneg)
+#           num_hbonds = len(self.hbonds_ldon + self.hbonds_pdon)
+#           num_pication = len(self.pication_laro + self.pication_paro)
+#           num_pistack = len(self.pistacking)
+#           num_halogen = len(self.halogen_bonds)
+#           num_waterbridges = len(self.water_bridges)
+#           if num_saltbridges != 0:
+#               interactions_list.append('%i salt bridge(s)' % num_saltbridges)
+#           if num_hbonds != 0:
+#               interactions_list.append('%i hydrogen bond(s)' % num_hbonds)
+#           if num_pication != 0:
+#               interactions_list.append(
+#                   '%i pi-cation interaction(s)' %
+#                   num_pication)
+#           if num_pistack != 0:
+#               interactions_list.append('%i pi-stacking(s)' % num_pistack)
+#           if num_halogen != 0:
+#               interactions_list.append('%i halogen bond(s)' % num_halogen)
+#           if num_waterbridges != 0:
+#               interactions_list.append(
+#                   '%i water bridge(s)' %
+#                   num_waterbridges)
+#           if not len(interactions_list) == 0:
+#               # raise RuntimeWarning(f'complex uses {interactions_list}')
+#               #print(f'complex uses {interactions_list}')
+#               pass
+#       else:
+#           # raise RuntimeWarning('no interactions for this ligand')
+#           print('no interactions for this ligand')
 
-    def hphob_calcInd(self, protein):
-        indices = []
-        hydrophobic_interactions = self.hydrophobic_interactions(protein.get_hydrophobic_atoms())
-        
-        for interaction in hydrophobic_interactions:
-            i = interaction.bsatom_orig_idx
-            j = interaction.ligatom_orig_idx
-            indices.append([i, j])
-        idx = np.array(indices, int)
-        if len(idx) == 0:
-            print("WARNING! No hydrophobic contacts found!")
-        return idx
-    
-    def hbond_calcInd(self):
-        hbonds_ldon_indices = [[hb.d.GetIdx(), hb.a.GetIdx()] for hb in self.hbonds_ldon]
-        hbonds_pdon_indices = [[hb.a.GetIdx(), hb.d.GetIdx()] for hb in self.hbonds_pdon]
-        idx = np.array(hbonds_ldon_indices + hbonds_pdon_indices, int)
-        if len(idx) == 0:
-            print("WARNING! No hydrogen bonds found!")
-        return idx    
-    
-    def vdw_calcInd(self, protein, ligand):
-        not_hyd_idx = np.where(protein.atomic_symbol != 'H')[0]
-        i, j = np.where(self.dist_mat[not_hyd_idx][:,not_hyd_idx] < 6.0)
-        return np.array([not_hyd_idx[i], not_hyd_idx[j]]).T
-    
-    def calc_dist_mat(self, protein, ligand):
-       # Calculate the pairwise distances between binding site and ligand atoms
-        dist_matrix = cdist(protein.atoms_coords, protein.atoms_coords, 'euclidean')
+
+    def calc_dist_mat(self):
+        # Calculate the pairwise distances between binding site and ligand atoms
+        dist_matrix = cdist(*[self.protein.atom_coord]*2, 'euclidean')
         return dist_matrix
+
+
+    def calc_vectors(self):
+        # Calculate normal vectors between all pairs of atoms
+        vectors = self.protein.atom_coord.reshape(-1, 1, 3) - self.protein.atom_coord
+        vectors = vectors / self.dist_mat.reshape(self.dist_mat.shape + (1,))
+        dist_mat = self.dist_mat.copy()
+        np.fill_diagonal(dist_mat, 1)
+        return vectors / dist_mat.reshape(self.dist_mat.shape + (1,))
+
     
-    def calc_atomic_radii_sum(self, protein, ligand):
+#   def calc_atomic_radii_sum(self):
+#      # Calculate the sum of atomic radii between binding site and ligand atoms
+#       return np.sum(np.meshgrid(*[self.protein.atom_radii]*2), axis=0)
+
+    
+    def calc_is_intra_residue(self):
        # Calculate the sum of atomic radii between binding site and ligand atoms
-        return np.sum(np.meshgrid(protein.atomic_radii, ligand.atomic_radii), axis=0)
+        return ~np.equal(*np.meshgrid(*[self.protein.residue_idx]*2))
+
     
-    def hydrophobic_interactions(self, atom_set_a):
+    def get_salt_bridges(self):
+        # Get indices of positively / negatively charged atoms
+        charge = self.protein.atom_charge[self.protein.charged]
+        pos_idx = self.protein.charged[charge > 0]
+        neg_idx = self.protein.charged[charge < 0]
+
+        # Find oppositely-charged pairs within cutoff distance,
+        # that are not part of the same residue
+        dist_okay = self.dist_mat[pos_idx][:,neg_idx] < config.SALTBRIDGE_DIST_MAX
+        intra_res = self.is_intra_residue[pos_idx][:,neg_idx]
+        i, j = np.where((dist_okay) & (intra_res))
+        return np.array([pos_idx[i], neg_idx[j]]).T
+    
+
+    def get_hbonds(self):
+        acc_idx = self.protein.hbond_acc_idx
+        don_idx = self.protein.hbond_don_idx
+
+        # Find atom pairs within a certain distance,
+        # that are not in the same residue
+        dist_ad = self.dist_mat[acc_idx][:,don_idx[:,0]]
+        dist_okay = (config.MIN_DIST < dist_ad) & (dist_ad < config.HBOND_DIST_MAX)
+        intra_res = self.is_intra_residue[acc_idx][:,don_idx[:,0]]
+
+        i, j = np.where(dist_okay & intra_res)
+
+        # Calculate H-bond angles, and only include if > 120 degrees
+        dond_coord = self.protein.atom_coord[don_idx[j,0]]#.reshape(-1,1,3)
+        donh_coord = self.protein.atom_coord[don_idx[j,1]]#.reshape(1,-1,3)
+        acc_coord = self.protein.atom_coord[acc_idx[i]]#.reshape(1,-1,3)
+
+        vec_hd = (donh_coord - dond_coord) / self.dist_mat[don_idx[j,1], don_idx[j,0]].reshape(-1, 1)
+        vec_ha = (donh_coord - acc_coord) / self.dist_mat[don_idx[j,1], acc_idx[i]].reshape(-1, 1)
+
+
+        angle = np.degrees(np.arccos(np.sum(vec_hd * vec_ha, axis=1)))
+        angle_okay = angle > config.HBOND_DON_ANGLE_MIN
+
+        idx = np.where(angle_okay)[0]
+        acc_idx = acc_idx[i][idx]
+        don_idx = don_idx[j][idx]
+        return np.array([acc_idx, don_idx[:,0]]).T
+            
+
+    def get_vdw(self):
+        not_hyd = np.where(self.protein.atom_name != 'H')[0]
+        dist_okay = self.dist_mat[not_hyd][:,not_hyd] < 6.0
+        is_intra = self.is_intra_residue[not_hyd][:,not_hyd]
+        return not_hyd[np.array([[i, j] for i, j in zip(*np.where(dist_okay & is_intra)) if i < j])]
+
+    
+    def hydrophobic_interactions(self):
         """Detection of hydrophobic pliprofiler between atom_set_a (binding site) and atom_set_b (ligand).
         Definition: All pairs of qualified carbon atoms within a distance of HYDROPH_DIST_MAX
         """
-        data = namedtuple(
-            'hydroph_interaction',
-            'bsatom bsatom_orig_idx ligatom ligatom_orig_idx sidechain '
-            'distance restype resnr reschain restype_l resnr_l reschain_l')
-        pairings = []
+        hp_atom_idx = self.protein.hydrophobic_idx.astype(int)
+        distances = self.dist_mat[hp_atom_idx][:,hp_atom_idx]
 
-        # prepared 1) atom_pairs beforehand 2) used numpy operations to filter those pairs
-        coords_a = np.array([a.coords for a in atom_set_a])
-        
-        #distances = np.sqrt(np.sum((coords_a[:, None] - coords_a) ** 2, axis=2))
-        distances = np.zeros((len(coords_a), len(coords_a)))
-        for i in range(len(coords_a)):
-            for j in range(i+1, len(coords_a)):
-                distances[i, j] = distances[j, i] = euclidean3d(coords_a[i], coords_a[j])
+        dist_okay = (config.MIN_DIST < distances) & (distances < config.HYDROPH_DIST_MAX)
+        intra_res = self.is_intra_residue[hp_atom_idx][:,hp_atom_idx]
 
-        mask = (config.MIN_DIST < distances) & (distances < config.HYDROPH_DIST_MAX)
-        #atom_pairs = [(atom_set_a[i], atom_set_a[j]) for i, j in zip(*np.where(mask)) if i != j]
-        atom_pairs = [(atom_set_a[i], atom_set_a[j], distances[i, j]) for i, j in zip(*np.where(mask)) if i != j]
+        i, j = np.where(dist_okay & intra_res)
+        atom_idx = np.where(hp_atom_idx)[0]
+        atom_pairs = np.array([atom_idx[i], atom_idx[j]]).T
+        return atom_pairs
 
-        for a, b, e in atom_pairs:
-            restype, resnr, reschain = whichrestype(
-                a.atom), whichresnumber(
-                a.atom), whichchain(
-                a.atom)
-            is_sidechain_hc = is_sidechain(a.atom)
-            restype_l, resnr_l, reschain_l = "Lig", 1, "L"
-            contact = data(
-                bsatom=a.atom,
-                bsatom_orig_idx=a.orig_idx,
-                ligatom=b.atom,
-                ligatom_orig_idx=b.orig_idx,
-                sidechain=is_sidechain_hc,
-                distance=e,
-                restype=restype,
-                resnr=resnr,
-                reschain=reschain,
-                restype_l=restype_l,
-                resnr_l=resnr_l,
-                reschain_l=reschain_l
-                )
-            pairings.append(contact)
-        return filter_contacts(pairings)
-
-    def find_unpaired_ligand(self):
-        """Identify unpaired functional in groups in ligands, involving H-Bond donors, acceptors, halogen bond donors.
-        """
-        unpaired_hba, unpaired_hbd, unpaired_hal = [], [], []
-        # Unpaired hydrogen bond acceptors/donors in ligand (not used for
-        # hydrogen bonds/water, salt bridges/mcomplex)
-        involved_atoms = [hbond.a.GetIdx() for hbond in self.hbonds_pdon] + \
-            [hbond.d.GetIdx() for hbond in self.hbonds_ldon]
-        [[involved_atoms.append(atom.GetIdx()) for atom in sb.negative.atoms]
-         for sb in self.saltbridge_lneg]
-        [[involved_atoms.append(atom.GetIdx()) for atom in sb.positive.atoms]
-         for sb in self.saltbridge_pneg]
-        [involved_atoms.append(wb.a.GetIdx())
-         for wb in self.water_bridges if wb.protisdon]
-        [involved_atoms.append(wb.d.GetIdx())
-         for wb in self.water_bridges if not wb.protisdon]
-        [involved_atoms.append(mcomplex.target.atom.GetIdx(
-        )) for mcomplex in self.metal_complexes if mcomplex.location == 'ligand']
-        for atom in [hba.a for hba in self.ligand.get_hba()]:
-            if atom.GetIdx() not in involved_atoms:
-                unpaired_hba.append(atom)
-        for atom in [hbd.d for hbd in self.ligand.get_hbd()]:
-            if atom.GetIdx() not in involved_atoms:
-                unpaired_hbd.append(atom)
-
-        # unpaired halogen bond donors in ligand (not used for the previous +
-        # halogen bonds)
-        [involved_atoms.append(atom.don.x.GetIdx())
-         for atom in self.halogen_bonds]
-        for atom in [haldon.x for haldon in self.ligand.halogenbond_don]:
-            if atom.GetIdx() not in involved_atoms:
-                unpaired_hal.append(atom)
-        return unpaired_hba, unpaired_hbd, unpaired_hal
 
     def refine_hydrophobic(self, all_h, pistacks):
         """Apply several rules to reduce the number of hydrophobic interactions."""
@@ -1401,5 +838,5 @@ def get_interactions(mol_protein, pdbid=None):
     data = namedtuple("interaction", "lig prot interactions")
     prot = Protein(mol_protein)
 
-    interactions = PLInteraction(prot, prot, pdbid)
+    interactions = PLInteraction(prot)
     return data(lig=prot, prot=prot, interactions=interactions)
